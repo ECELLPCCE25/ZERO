@@ -136,11 +136,6 @@ async def stop_stream(data: Dict[str, str]):
     else:
         raise HTTPException(status_code=404, detail="No active stream found for the specified IP")
 
-@router.get("/scan_network")
-async def scan_network():
-    # Simulated network scan (replace with actual implementation)
-    ip_cameras = ["192.168.1.100", "192.168.1.101"]
-    return {"ip_cameras": ip_cameras}
 
 def decode_frame(data):
     encoded_data = data.split(",")[1]
