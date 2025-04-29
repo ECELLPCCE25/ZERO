@@ -52,10 +52,10 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
                 trigger_alert(stream_id, person_count)
     except Exception as e:
         print(f"WebSocket connection closed for stream ID: {stream_id}")
-        store_person_count_data(stream_id)
+        store_person_count_data(stream_id, user_id)
 
 @router.get("/ipcam")
-async def ipcam_endpoint(device: str = Query(...), id: str = Query(...)):
+async def ipcam_endpoint(device: str = Query(...), id: str = Query(...), user_id: str = Query(...)):
     async def generate():
         video_url = f"http://{device}:4747/video"
         cap = cv2.VideoCapture(video_url)
@@ -94,13 +94,6 @@ async def ipcam_endpoint(device: str = Query(...), id: str = Query(...)):
 
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace;boundary=frame")
 
-@router.get("/person_count_data/{stream_id}")
-async def get_person_count_data(stream_id: str):
-    if stream_id in person_count_data:
-        return {"data": person_count_data[stream_id]}
-    else:
-        raise HTTPException(status_code=404, detail="No data found for the specified stream ID")
-
 @router.post("/stop_stream")
 async def stop_stream(data: Dict[str, str]):
     ip = data.get("ip")
@@ -109,7 +102,7 @@ async def stop_stream(data: Dict[str, str]):
         cap = connected_cameras[ip]
         cap.release()
         del connected_cameras[ip]
-        store_person_count_data(ip)
+        store_person_count_data(ip, user_id)
         return {"message": f"Stream for IP {ip} stopped successfully"}
     else:
         raise HTTPException(status_code=404, detail="No active stream found for the specified IP")
@@ -136,7 +129,7 @@ def trigger_alert(stream_id, person_count):
     print(f"Alert! Person count ({person_count}) exceeds the threshold for stream ID: {stream_id}")
     # Add additional alert logic here (e.g., send a notification, log the event, etc.)
 
-def store_person_count_data(stream_id):
+def store_person_count_data(stream_id:int, user_id:str):
     if stream_id in person_count_data:
         print(f"Person count data for stream ID {stream_id}:")
         for timestamp, count in person_count_data[stream_id]:
@@ -145,7 +138,7 @@ def store_person_count_data(stream_id):
         # Store data in Supabase
         data_to_store = [{"timestamp": ts.isoformat(), "count": cnt} for ts, cnt in person_count_data[stream_id]]
         response = supabase.table('cam_data').insert([{
-            'user_id': 'your_user_id',  # Replace with actual user ID
+            'user_id': user_id,  # Replace with actual user ID
             'stream_id': stream_id,
             'person_count_data': data_to_store
         }]).execute()
