@@ -1,42 +1,160 @@
-// CameraList.tsx
-'use client'
-import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+"use client";
+import React, { useEffect, useState } from "react";
+import axios from "axios";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 
-interface CameraListProps {}
-
-const CameraList: React.FC<CameraListProps> = () => {
+const CameraList: React.FC = () => {
   const [ipCameras, setIpCameras] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [idCounter, setIdCounter] = useState(0);
+  const [connectedCameras, setConnectedCameras] = useState<{ ip: string, id: number, visible: boolean, pinned: boolean }[]>([]);
+  const [newIp, setNewIp] = useState("");
+  const [fullScreenCamera, setFullScreenCamera] = useState<{ ip: string, id: number } | null>(null);
 
   useEffect(() => {
-    axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}/scan_network`, {
-      headers: {
-        'Accept': 'application/json'
-      }
-    })
-    .then((response) => {
-      setIpCameras(response.data.ip_cameras);
-      setLoading(false);
-    })
-    .catch((err) => {
-      setError('Failed to fetch IP cameras');
-      setLoading(false);
-    });
+    axios
+      .get(`${process.env.NEXT_PUBLIC_BACKEND_URL}/scan_network`, {
+        headers: {
+          Accept: "application/json",
+        },
+      })
+      .then((response) => {
+        setIpCameras(response.data.ip_cameras);
+        setLoading(false);
+      })
+      .catch(() => {
+        setError("Failed to fetch IP cameras");
+        setLoading(false);
+      });
   }, []);
+
+  const handleAddCamera = (ip: string) => {
+    const existingCamera = connectedCameras.find((camera) => camera.ip === ip);
+    if (existingCamera) {
+      setConnectedCameras((prevCameras) =>
+        prevCameras.map((camera) =>
+          camera.ip === ip ? { ...camera, visible: true } : camera
+        )
+      );
+    } else {
+      const id = idCounter + Math.floor(Math.random() * 1000);
+      setConnectedCameras((prevCameras) => [
+        ...prevCameras,
+        { ip, id, visible: true, pinned: false },
+      ]);
+      setIdCounter((prev) => prev + 1);
+    }
+  };
+
+  const handleSubmitNewIp = () => {
+    if (newIp.trim()) {
+      handleAddCamera(newIp.trim());
+      setNewIp(""); // Clear the input field after submission
+    }
+  };
+
+  const handlePinCamera = (ip: string, id: number) => {
+    setConnectedCameras((prevCameras) =>
+      prevCameras.map((camera) =>
+        camera.ip === ip ? { ...camera, pinned: true } : camera
+      )
+    );
+    setFullScreenCamera({ ip, id });
+  };
+
+  const handleUnpinCamera = () => {
+    setConnectedCameras((prevCameras) =>
+      prevCameras.map((camera) =>
+        camera.ip === fullScreenCamera?.ip ? { ...camera, pinned: false } : camera
+      )
+    );
+    setFullScreenCamera(null);
+  };
+
+  const handleDiscardCamera = (ip: string) => {
+    setConnectedCameras((prevCameras) =>
+      prevCameras.map((camera) =>
+        camera.ip === ip ? { ...camera, visible: false } : camera
+      )
+    );
+  };
 
   if (loading) return <p>Scanning network...</p>;
   if (error) return <p>{error}</p>;
 
   return (
     <div>
-      <h2>Discovered IP Cameras</h2>
-      <ul className="list-disc pl-5">
-        {ipCameras.map((ip, index) => (
-          <li key={index}>{ip}</li>
+      <h2 className="text-lg font-bold mb-4">Select IP Cameras to View</h2>
+
+      <div className="mb-4">
+        {ipCameras.map((ip) => (
+          <div key={ip} className="flex items-center mb-2">
+            <span className="mr-2">{ip}</span>
+            <Button onClick={() => handleAddCamera(ip)}>Add</Button>
+          </div>
         ))}
-      </ul>
+      </div>
+
+      <div className="mb-4">
+        <input
+          type="text"
+          value={newIp}
+          onChange={(e) => setNewIp(e.target.value)}
+          placeholder="Enter new IP address"
+          className="border p-2 mr-2"
+        />
+        <Button onClick={handleSubmitNewIp}>Submit</Button>
+      </div>
+
+      {fullScreenCamera ? (
+        <div className="fixed inset-0 bg-black flex items-center justify-center z-50">
+          <div className="relative w-full h-full">
+            <img
+              src={`${process.env.NEXT_PUBLIC_BACKEND_URL}/ipcam?device=${fullScreenCamera.ip}&id=${fullScreenCamera.id}`}
+              alt={`Camera at ${fullScreenCamera.ip}`}
+              className="w-full h-full object-contain"
+            />
+            <Button onClick={handleUnpinCamera} className="absolute top-4 right-4">Unpin</Button>
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          {connectedCameras.map(({ ip, id, visible, pinned }) => (
+            <Card
+              key={ip}
+              className="p-2 relative"
+              style={{ display: visible || pinned ? 'block' : 'none' }}
+              onMouseEnter={(e) => {
+                const card = e.currentTarget;
+                const options = card.querySelector(".options") as HTMLElement;
+                if (options) {
+                  options.style.display = "flex";
+                }
+              }}
+              onMouseLeave={(e) => {
+                const card = e.currentTarget;
+                const options = card.querySelector(".options") as HTMLElement;
+                if (options) {
+                  options.style.display = "none";
+                }
+              }}
+            >
+              <h3 className="text-sm font-semibold mb-2">{ip}</h3>
+              <img
+                src={`${process.env.NEXT_PUBLIC_BACKEND_URL}/ipcam?device=${ip}&id=${id}`}
+                alt={`Camera at ${ip}`}
+                className="w-full h-48 object-cover rounded"
+              />
+              <div className="options absolute top-2 right-2 flex space-x-2" style={{ display: 'none' }}>
+                <Button onClick={() => handlePinCamera(ip, id)}>Pin</Button>
+                <Button onClick={() => handleDiscardCamera(ip)}>Discard</Button>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
