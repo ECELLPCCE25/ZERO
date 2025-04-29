@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, Query, HTTPException
 from ultralytics import YOLO
 import base64
 from fastapi.responses import StreamingResponse
@@ -23,10 +23,16 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
         encoded_frame = encode_frame(annotated_frame)
         await websocket.send_text(encoded_frame)
 
-@router.get("/ipcam/{stream_id}")
-async def ipcam_endpoint(stream_id: str):
+@router.get("/ipcam")
+async def ipcam_endpoint(device: str = Query(...), id: str = Query(...)):
     async def generate():
-        cap = cv2.VideoCapture("http://192.168.69.36:4747/video")
+        # Construct the video stream URL
+        video_url = f"http://{device}:4747/video"
+
+        cap = cv2.VideoCapture(video_url)
+        if not cap.isOpened():
+            raise HTTPException(status_code=500, detail="Unable to open video stream")
+
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
