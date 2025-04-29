@@ -1,13 +1,17 @@
 import cv2
 import numpy as np
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, Query, HTTPException
 from ultralytics import YOLO
 import base64
 from fastapi.responses import StreamingResponse
 import asyncio
+from typing import List, Dict
 
 router = APIRouter()
 model = YOLO("yolov8n.pt")
+
+# In-memory storage for connected cameras
+connected_cameras = {}
 
 @router.websocket("/ws/{stream_id}")
 async def websocket_endpoint(websocket: WebSocket, stream_id: str):
@@ -23,10 +27,14 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
         encoded_frame = encode_frame(annotated_frame)
         await websocket.send_text(encoded_frame)
 
-@router.get("/ipcam/{stream_id}")
-async def ipcam_endpoint(stream_id: str):
+@router.get("/ipcam")
+async def ipcam_endpoint(device: str = Query(...), id: str = Query(...)):
     async def generate():
-        cap = cv2.VideoCapture("http://192.168.69.36:4747/video")
+        video_url = f"http://{device}:4747/video"
+        cap = cv2.VideoCapture(video_url)
+        if not cap.isOpened():
+            raise HTTPException(status_code=500, detail="Unable to open video stream")
+
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
@@ -41,7 +49,7 @@ async def ipcam_endpoint(stream_id: str):
             frame_bytes = buffer.tobytes()
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            await asyncio.sleep(0.03)  # Adjust the sleep time as needed
+            await asyncio.sleep(0.03)
         cap.release()
 
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace;boundary=frame")
