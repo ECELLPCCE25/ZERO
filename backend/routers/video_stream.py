@@ -7,6 +7,12 @@ from fastapi.responses import StreamingResponse
 import asyncio
 from typing import List, Dict
 from datetime import datetime
+from supabase import create_client, Client
+
+# Initialize Supabase client
+supabase_url = 'your_supabase_url'
+supabase_key = 'your_supabase_key'
+supabase: Client = create_client(supabase_url, supabase_key)
 
 router = APIRouter()
 model = YOLO("yolov8n.pt")
@@ -41,7 +47,7 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
                 trigger_alert(stream_id, person_count)
     except Exception as e:
         print(f"WebSocket connection closed for stream ID: {stream_id}")
-        print_person_count_data(stream_id)
+        store_person_count_data(stream_id)
 
 @router.get("/ipcam")
 async def ipcam_endpoint(device: str = Query(...), id: str = Query(...)):
@@ -75,7 +81,7 @@ async def ipcam_endpoint(device: str = Query(...), id: str = Query(...)):
                     trigger_alert(id, person_count)
         finally:
             cap.release()
-            print_person_count_data(id)
+            store_person_count_data(id)
 
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace;boundary=frame")
 
@@ -108,10 +114,18 @@ def trigger_alert(stream_id, person_count):
     print(f"Alert! Person count ({person_count}) exceeds the threshold for stream ID: {stream_id}")
     # Add additional alert logic here (e.g., send a notification, log the event, etc.)
 
-def print_person_count_data(stream_id):
+def store_person_count_data(stream_id):
     if stream_id in person_count_data:
         print(f"Person count data for stream ID {stream_id}:")
         for timestamp, count in person_count_data[stream_id]:
             print(f"{timestamp}: {count}")
+
+        # Store data in Supabase
+        data_to_store = [{"timestamp": ts.isoformat(), "count": cnt} for ts, cnt in person_count_data[stream_id]]
+        supabase.rpc('insert_person_count_data', {
+            'user_id': 'your_user_id',  # Replace with actual user ID
+            'stream_id': stream_id,
+            'person_count_data': data_to_store
+        }).execute()
     else:
         print(f"No person count data found for stream ID {stream_id}")
