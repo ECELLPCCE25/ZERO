@@ -6,14 +6,16 @@ import { Button } from "@/components/ui/button";
 
 const CameraList: React.FC = () => {
   const [ipCameras, setIpCameras] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [idCounter, setIdCounter] = useState(0);
   const [connectedCameras, setConnectedCameras] = useState<{ ip: string, id: number, visible: boolean, pinned: boolean }[]>([]);
   const [newIp, setNewIp] = useState("");
   const [fullScreenCamera, setFullScreenCamera] = useState<{ ip: string, id: number } | null>(null);
 
-  useEffect(() => {
+  const scanNetwork = () => {
+    setLoading(true);
+    setError(null);
     axios
       .get(`${process.env.NEXT_PUBLIC_BACKEND_URL}/scan_network`, {
         headers: {
@@ -28,7 +30,7 @@ const CameraList: React.FC = () => {
         setError("Failed to fetch IP cameras");
         setLoading(false);
       });
-  }, []);
+  };
 
   const handleAddCamera = (ip: string) => {
     const existingCamera = connectedCameras.find((camera) => camera.ip === ip);
@@ -74,19 +76,31 @@ const CameraList: React.FC = () => {
   };
 
   const handleDiscardCamera = (ip: string) => {
-    setConnectedCameras((prevCameras) =>
-      prevCameras.map((camera) =>
-        camera.ip === ip ? { ...camera, visible: false } : camera
-      )
-    );
+    // Send a request to the backend to stop the stream
+    axios.post(`${process.env.NEXT_PUBLIC_BACKEND_URL}/stop_stream`, { ip })
+      .then(() => {
+        setConnectedCameras((prevCameras) =>
+          prevCameras.map((camera) =>
+            camera.ip === ip ? { ...camera, visible: false } : camera
+          )
+        );
+      })
+      .catch((error) => {
+        console.error("Failed to stop the stream:", error);
+      });
   };
-
-  if (loading) return <p>Scanning network...</p>;
-  if (error) return <p>{error}</p>;
 
   return (
     <div>
       <h2 className="text-lg font-bold mb-4">Select IP Cameras to View</h2>
+
+      <div className="mb-4">
+        <Button onClick={scanNetwork} disabled={loading}>
+          {loading ? "Scanning..." : "Scan Network"}
+        </Button>
+      </div>
+
+      {error && <p className="text-red-500 mb-4">{error}</p>}
 
       <div className="mb-4">
         {ipCameras.map((ip) => (
