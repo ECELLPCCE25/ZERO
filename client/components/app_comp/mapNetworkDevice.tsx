@@ -195,6 +195,13 @@ const CameraList: React.FC = () => {
                 alt={`Camera at ${ip}`}
                 className="w-full h-48 object-cover rounded"
               />
+
+<img
+                src={`${process.env.NEXT_PUBLIC_BACKEND_URL}/motion-flow/video_feed?device=${ip}&id=${id}`}
+                alt={`Camera at ${ip}`}
+                className="w-full h-48 object-cover rounded"
+              />
+
               <div
                 className="options absolute top-2 right-2 flex space-x-2"
                 style={{ display: "none" }}
