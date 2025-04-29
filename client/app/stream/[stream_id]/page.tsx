@@ -51,7 +51,6 @@ export default function page() {
 
   return (
     <>
-    <p>{stream_id}</p>
     <Graph data={graphData}/>
     </>
   )
