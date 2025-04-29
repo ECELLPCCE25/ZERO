@@ -3,14 +3,14 @@ import React, { useEffect, useState } from "react";
 import axios from "axios";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 
 const CameraList: React.FC = () => {
   const [ipCameras, setIpCameras] = useState<string[]>([]);
-  const [selectedCameras, setSelectedCameras] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [idCounter, setIdCounter] = useState(0);
-  const [connectedCameras, setConnectedCameras] = useState<{ ip: string, id: number }[]>([]);
+  const [connectedCameras, setConnectedCameras] = useState<{ ip: string, id: number, visible: boolean }[]>([]);
 
   useEffect(() => {
     axios
@@ -29,15 +29,22 @@ const CameraList: React.FC = () => {
       });
   }, []);
 
-  const handleSelectChange = (value: string) => {
-    const selected = value.split(",");
-    setSelectedCameras(selected);
-    const updated = selected.map((ip) => {
+  const handleAddCamera = (ip: string) => {
+    const existingCamera = connectedCameras.find((camera) => camera.ip === ip);
+    if (existingCamera) {
+      setConnectedCameras((prevCameras) =>
+        prevCameras.map((camera) =>
+          camera.ip === ip ? { ...camera, visible: true } : camera
+        )
+      );
+    } else {
       const id = idCounter + Math.floor(Math.random() * 1000);
-      return { ip, id };
-    });
-    setConnectedCameras(updated);
-    setIdCounter((prev) => prev + updated.length);
+      setConnectedCameras((prevCameras) => [
+        ...prevCameras,
+        { ip, id, visible: true },
+      ]);
+      setIdCounter((prev) => prev + 1);
+    }
   };
 
   if (loading) return <p>Scanning network...</p>;
@@ -47,20 +54,18 @@ const CameraList: React.FC = () => {
     <div>
       <h2 className="text-lg font-bold mb-4">Select IP Cameras to View</h2>
 
-      <Select onValueChange={handleSelectChange}>
-        <SelectTrigger className="w-full max-w-md">
-          <SelectValue placeholder="Choose cameras" />
-        </SelectTrigger>
-        <SelectContent>
-          {ipCameras.map((ip) => (
-            <SelectItem key={ip} value={ip}>{ip}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <div className="mb-4">
+        {ipCameras.map((ip) => (
+          <div key={ip} className="flex items-center mb-2">
+            <span className="mr-2">{ip}</span>
+            <Button onClick={() => handleAddCamera(ip)}>Add</Button>
+          </div>
+        ))}
+      </div>
 
-      <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-        {connectedCameras.map(({ ip, id }) => (
-          <Card key={ip} className="p-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+        {connectedCameras.map(({ ip, id, visible }) => (
+          <Card key={ip} className="p-2" style={{ display: visible ? 'block' : 'none' }}>
             <h3 className="text-sm font-semibold mb-2">{ip}</h3>
             <img
               src={`${process.env.NEXT_PUBLIC_BACKEND_URL}/ipcam?device=${ip}&id=${id}`}

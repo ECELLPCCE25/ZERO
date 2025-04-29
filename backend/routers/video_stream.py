@@ -21,23 +21,27 @@ PERSON_COUNT_THRESHOLD = 5
 @router.websocket("/ws/{stream_id}")
 async def websocket_endpoint(websocket: WebSocket, stream_id: str):
     await websocket.accept()
-    while True:
-        data = await websocket.receive_text()
-        frame = decode_frame(data)
-        results = model(frame)
-        person_count = sum(1 for r in results[0].boxes.cls if int(r) == 0)
-        annotated_frame = draw_boxes(frame, results)
-        encoded_frame = encode_frame(annotated_frame)
-        await websocket.send_text(encoded_frame)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            frame = decode_frame(data)
+            results = model(frame)
+            person_count = sum(1 for r in results[0].boxes.cls if int(r) == 0)
+            annotated_frame = draw_boxes(frame, results)
+            encoded_frame = encode_frame(annotated_frame)
+            await websocket.send_text(encoded_frame)
 
-        # Track person count data
-        if stream_id not in person_count_data:
-            person_count_data[stream_id] = []
-        person_count_data[stream_id].append((datetime.now(), person_count))
+            # Track person count data
+            if stream_id not in person_count_data:
+                person_count_data[stream_id] = []
+            person_count_data[stream_id].append((datetime.now(), person_count))
 
-        # Check if person count exceeds the threshold
-        if person_count > PERSON_COUNT_THRESHOLD:
-            trigger_alert(stream_id, person_count)
+            # Check if person count exceeds the threshold
+            if person_count > PERSON_COUNT_THRESHOLD:
+                trigger_alert(stream_id, person_count)
+    except Exception as e:
+        print(f"WebSocket connection closed for stream ID: {stream_id}")
+        print_person_count_data(stream_id)
 
 @router.get("/ipcam")
 async def ipcam_endpoint(device: str = Query(...), id: str = Query(...)):
@@ -47,31 +51,33 @@ async def ipcam_endpoint(device: str = Query(...), id: str = Query(...)):
         if not cap.isOpened():
             raise HTTPException(status_code=500, detail="Unable to open video stream")
 
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-            results = model(frame)
-            person_count = sum(1 for r in results[0].boxes.cls if int(r) == 0)
-            annotated_frame = draw_boxes(frame, results)
-            _, buffer = cv2.imencode('.jpg', annotated_frame)
-            frame_bytes = buffer.tobytes()
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            await asyncio.sleep(0.03)
+        try:
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                results = model(frame)
+                person_count = sum(1 for r in results[0].boxes.cls if int(r) == 0)
+                annotated_frame = draw_boxes(frame, results)
+                _, buffer = cv2.imencode('.jpg', annotated_frame)
+                frame_bytes = buffer.tobytes()
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                await asyncio.sleep(0.03)
 
-            # Track person count data
-            if id not in person_count_data:
-                person_count_data[id] = []
-            person_count_data[id].append((datetime.now(), person_count))
+                # Track person count data
+                if id not in person_count_data:
+                    person_count_data[id] = []
+                person_count_data[id].append((datetime.now(), person_count))
 
-            # Check if person count exceeds the threshold
-            if person_count > PERSON_COUNT_THRESHOLD:
-                trigger_alert(id, person_count)
-        cap.release()
+                # Check if person count exceeds the threshold
+                if person_count > PERSON_COUNT_THRESHOLD:
+                    trigger_alert(id, person_count)
+        finally:
+            cap.release()
+            print_person_count_data(id)
 
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace;boundary=frame")
-
 
 @router.get("/person_count_data/{stream_id}")
 async def get_person_count_data(stream_id: str):
@@ -101,3 +107,11 @@ def draw_boxes(frame, results):
 def trigger_alert(stream_id, person_count):
     print(f"Alert! Person count ({person_count}) exceeds the threshold for stream ID: {stream_id}")
     # Add additional alert logic here (e.g., send a notification, log the event, etc.)
+
+def print_person_count_data(stream_id):
+    if stream_id in person_count_data:
+        print(f"Person count data for stream ID {stream_id}:")
+        for timestamp, count in person_count_data[stream_id]:
+            print(f"{timestamp}: {count}")
+    else:
+        print(f"No person count data found for stream ID {stream_id}")
