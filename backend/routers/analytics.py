@@ -17,7 +17,7 @@ router = APIRouter()
 def get_person_count_by_stream_id(user_id: str = Query(...), stream_id: str = Query(...)):
     try:
         # Query the Supabase database to retrieve person count data
-        response = supabase.table('cam_data').select('person_count_data').eq('user_id', user_id).eq('stream_id', stream_id).execute()
+        response = supabase.table('cam_data').select('person_count_data', 'cam_name').eq('user_id', user_id).eq('stream_id', stream_id).execute()
 
         if not response.data:
             raise HTTPException(status_code=404, detail="No data found for the specified user and stream ID")
@@ -32,7 +32,7 @@ def get_person_count_by_stream_id(user_id: str = Query(...), stream_id: str = Qu
 def get_person_count_by_stream_id(user_id: str = Query(...)):
     try:
         # Query the Supabase database to retrieve person count data
-        response = supabase.table('cam_data').select('stream_id').eq('user_id', user_id).execute()
+        response = supabase.table('cam_data').select('stream_id','cam_name').eq('user_id', user_id).execute()
 
         if not response.data:
             raise HTTPException(status_code=404, detail="No data found for the specified user and stream ID")
