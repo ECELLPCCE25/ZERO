@@ -5,9 +5,13 @@ from ultralytics import YOLO
 import base64
 from fastapi.responses import StreamingResponse
 import asyncio
+from typing import List, Dict
 
 router = APIRouter()
 model = YOLO("yolov8n.pt")
+
+# In-memory storage for connected cameras
+connected_cameras = {}
 
 @router.websocket("/ws/{stream_id}")
 async def websocket_endpoint(websocket: WebSocket, stream_id: str):
@@ -26,9 +30,7 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
 @router.get("/ipcam")
 async def ipcam_endpoint(device: str = Query(...), id: str = Query(...)):
     async def generate():
-        # Construct the video stream URL
         video_url = f"http://{device}:4747/video"
-
         cap = cv2.VideoCapture(video_url)
         if not cap.isOpened():
             raise HTTPException(status_code=500, detail="Unable to open video stream")
@@ -47,7 +49,7 @@ async def ipcam_endpoint(device: str = Query(...), id: str = Query(...)):
             frame_bytes = buffer.tobytes()
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            await asyncio.sleep(0.03)  # Adjust the sleep time as needed
+            await asyncio.sleep(0.03)
         cap.release()
 
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace;boundary=frame")

@@ -1,0 +1,1 @@
+sudo poetry run fastapi dev main.py
