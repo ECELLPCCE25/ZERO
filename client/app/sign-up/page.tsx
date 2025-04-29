@@ -6,14 +6,13 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation'; // ✅ App Router
 import { createSupabaseClient } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2 } from 'lucide-react';
-import router, { useRouter } from 'next/router';
-
 
 const formSchema = z.object({
   email: z.string().email('Invalid email address'),
@@ -27,6 +26,7 @@ const formSchema = z.object({
 export default function SignUpPage() {
   const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
+  const router = useRouter(); // ✅ Correct usage
   const supabase = createSupabaseClient();
 
   const {
@@ -46,9 +46,10 @@ export default function SignUpPage() {
         password: data.password,
       });
       if (error) throw error;
+
       toast.success('Please check your email to verify your account.');
       reset();
-      router.push('/cameraList')
+      router.push('/cameraList'); // ✅ Redirect
     } catch (error: any) {
       toast.error('Error: ' + error.message);
     } finally {
@@ -121,9 +122,9 @@ export default function SignUpPage() {
                 className="w-full"
                 disabled={isLoading}
               >
-                {isLoading ? (
+                {isLoading && (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : null}
+                )}
                 Sign Up
               </Button>
             </form>
