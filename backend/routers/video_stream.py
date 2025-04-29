@@ -1,3 +1,4 @@
+import logging
 import cv2
 import numpy as np
 from fastapi import APIRouter, WebSocket, Query, HTTPException
@@ -8,10 +9,14 @@ import asyncio
 from typing import List, Dict
 from datetime import datetime
 from supabase import create_client, Client
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 # Initialize Supabase client
-supabase_url = 'your_supabase_url'
-supabase_key = 'your_supabase_key'
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(supabase_url, supabase_key)
 
 router = APIRouter()
@@ -57,6 +62,8 @@ async def ipcam_endpoint(device: str = Query(...), id: str = Query(...)):
         if not cap.isOpened():
             raise HTTPException(status_code=500, detail="Unable to open video stream")
 
+        connected_cameras[device] = cap  # Store the video capture object
+
         try:
             while cap.isOpened():
                 ret, frame = cap.read()
@@ -81,6 +88,8 @@ async def ipcam_endpoint(device: str = Query(...), id: str = Query(...)):
                     trigger_alert(id, person_count)
         finally:
             cap.release()
+            if device in connected_cameras:
+                del connected_cameras[device]  # Remove the video capture object if it exists
             store_person_count_data(id)
 
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace;boundary=frame")
@@ -91,6 +100,19 @@ async def get_person_count_data(stream_id: str):
         return {"data": person_count_data[stream_id]}
     else:
         raise HTTPException(status_code=404, detail="No data found for the specified stream ID")
+
+@router.post("/stop_stream")
+async def stop_stream(data: Dict[str, str]):
+    ip = data.get("ip")
+    if ip in connected_cameras:
+        # Release the video capture resource
+        cap = connected_cameras[ip]
+        cap.release()
+        del connected_cameras[ip]
+        store_person_count_data(ip)
+        return {"message": f"Stream for IP {ip} stopped successfully"}
+    else:
+        raise HTTPException(status_code=404, detail="No active stream found for the specified IP")
 
 def decode_frame(data):
     encoded_data = data.split(",")[1]
@@ -122,10 +144,18 @@ def store_person_count_data(stream_id):
 
         # Store data in Supabase
         data_to_store = [{"timestamp": ts.isoformat(), "count": cnt} for ts, cnt in person_count_data[stream_id]]
-        supabase.rpc('insert_person_count_data', {
+        response = supabase.table('cam_data').insert([{
             'user_id': 'your_user_id',  # Replace with actual user ID
             'stream_id': stream_id,
             'person_count_data': data_to_store
-        }).execute()
+        }]).execute()
+
+        response = response.json()
+
+        if response:
+            print(f"Data successfully stored in Supabase for stream ID: {stream_id}")
+        else:
+            print(f"Failed to store data in Supabase for stream ID: {stream_id}")
+            print(response)
     else:
         print(f"No person count data found for stream ID {stream_id}")
