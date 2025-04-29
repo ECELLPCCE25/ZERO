@@ -4,6 +4,7 @@ import axios from "axios";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { createSupabaseClient } from "@/lib/supabase";
+import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 
 const CameraList: React.FC = () => {
   const [ipCameras, setIpCameras] = useState<string[]>([]);
@@ -124,9 +125,23 @@ const CameraList: React.FC = () => {
       <h2 className="text-lg font-bold mb-4">Select IP Cameras to View</h2>
 
       <div className="mb-4">
-        <Button onClick={scanNetwork} disabled={loading}>
-          {loading ? "Scanning..." : "Scan Network"}
-        </Button>
+      {!loading && (
+  <div className="mb-4">
+    <Button onClick={scanNetwork}>Scan Network</Button>
+  </div>
+)}
+
+{loading && (
+  <div className="fixed inset-0 flex items-center justify-center bg-white/80 z-50">
+    <DotLottieReact
+      src="https://lottie.host/1f517d86-fafe-4b55-ae27-536294b1472b/6iVFtyWYB4.lottie"
+      loop
+      autoplay
+      style={{ width: 200, height: 200 }}
+    />
+  </div>
+)}
+
       </div>
 
       {error && <p className="text-red-500 mb-4">{error}</p>}
