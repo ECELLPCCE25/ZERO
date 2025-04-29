@@ -6,12 +6,17 @@ import base64
 from fastapi.responses import StreamingResponse
 import asyncio
 from typing import List, Dict
+from datetime import datetime
 
 router = APIRouter()
 model = YOLO("yolov8n.pt")
 
-# In-memory storage for connected cameras
+# In-memory storage for connected cameras and person count data
 connected_cameras = {}
+person_count_data = {}
+
+# Threshold for triggering an alert
+PERSON_COUNT_THRESHOLD = 5
 
 @router.websocket("/ws/{stream_id}")
 async def websocket_endpoint(websocket: WebSocket, stream_id: str):
@@ -21,11 +26,18 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
         frame = decode_frame(data)
         results = model(frame)
         person_count = sum(1 for r in results[0].boxes.cls if int(r) == 0)
-        annotated_frame = results[0].plot()
-        cv2.putText(annotated_frame, f"People Count: {person_count}", (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        annotated_frame = draw_boxes(frame, results)
         encoded_frame = encode_frame(annotated_frame)
         await websocket.send_text(encoded_frame)
+
+        # Track person count data
+        if stream_id not in person_count_data:
+            person_count_data[stream_id] = []
+        person_count_data[stream_id].append((datetime.now(), person_count))
+
+        # Check if person count exceeds the threshold
+        if person_count > PERSON_COUNT_THRESHOLD:
+            trigger_alert(stream_id, person_count)
 
 @router.get("/ipcam")
 async def ipcam_endpoint(device: str = Query(...), id: str = Query(...)):
@@ -41,18 +53,32 @@ async def ipcam_endpoint(device: str = Query(...), id: str = Query(...)):
                 break
             results = model(frame)
             person_count = sum(1 for r in results[0].boxes.cls if int(r) == 0)
-            annotated_frame = results[0].plot()
-            print(f'People_count: {person_count}')
-            cv2.putText(annotated_frame, f"People Count: {person_count}", (20, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            annotated_frame = draw_boxes(frame, results)
             _, buffer = cv2.imencode('.jpg', annotated_frame)
             frame_bytes = buffer.tobytes()
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
             await asyncio.sleep(0.03)
+
+            # Track person count data
+            if id not in person_count_data:
+                person_count_data[id] = []
+            person_count_data[id].append((datetime.now(), person_count))
+
+            # Check if person count exceeds the threshold
+            if person_count > PERSON_COUNT_THRESHOLD:
+                trigger_alert(id, person_count)
         cap.release()
 
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace;boundary=frame")
+
+
+@router.get("/person_count_data/{stream_id}")
+async def get_person_count_data(stream_id: str):
+    if stream_id in person_count_data:
+        return {"data": person_count_data[stream_id]}
+    else:
+        raise HTTPException(status_code=404, detail="No data found for the specified stream ID")
 
 def decode_frame(data):
     encoded_data = data.split(",")[1]
@@ -64,3 +90,14 @@ def encode_frame(frame):
     _, buffer = cv2.imencode('.jpg', frame)
     encoded_frame = base64.b64encode(buffer).decode('utf-8')
     return f"data:image/jpeg;base64,{encoded_frame}"
+
+def draw_boxes(frame, results):
+    annotated_frame = frame.copy()
+    for box in results[0].boxes.xyxy.cpu().numpy():
+        x1, y1, x2, y2 = map(int, box[:4])
+        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    return annotated_frame
+
+def trigger_alert(stream_id, person_count):
+    print(f"Alert! Person count ({person_count}) exceeds the threshold for stream ID: {stream_id}")
+    # Add additional alert logic here (e.g., send a notification, log the event, etc.)
