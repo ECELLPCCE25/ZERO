@@ -1,26 +1,13 @@
 import cv2
 import numpy as np
-from fastapi import APIRouter, WebSocket
-
-import base64
+from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 import asyncio
-import time
+import sys
 
 router = APIRouter()
 
-
-def decode_frame(data):
-    encoded_data = data.split(",")[1]
-    np_arr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
-    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-    return frame
-
-
-def encode_frame(frame):
-    _, buffer = cv2.imencode(".jpg", frame)
-    encoded_frame = base64.b64encode(buffer).decode("utf-8")
-    return f"data:image/jpeg;base64,{encoded_frame}"
+DOWNSAMPLE_FACTOR = 4
 
 
 def calculate_and_visualize_flow(old_gray, frame_gray):
@@ -32,9 +19,7 @@ def calculate_and_visualize_flow(old_gray, frame_gray):
 
     hsv = np.zeros((frame_gray.shape[0], frame_gray.shape[1], 3), dtype=np.uint8)
     hsv[..., 1] = 255
-
     hsv[..., 0] = ang * 180 / np.pi / 2
-
     hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
 
     flow_hsv_img = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
@@ -42,97 +27,81 @@ def calculate_and_visualize_flow(old_gray, frame_gray):
     return flow_hsv_img
 
 
-@router.get("/ipcam/{stream_id}")
-async def ipcam_endpoint(stream_id: str):
-    async def generate():
-        video_url = "http://192.168.69.79:4747/video"
-        cap = cv2.VideoCapture(video_url)
+async def generate_optical_flow_stream(video_source: int = 0):
+    cap = cv2.VideoCapture(video_source)
 
-        if not cap.isOpened():
-            print(
-                f"Error: Could not open video stream from {video_url} for stream ID: {stream_id}"
-            )
-            return
+    if not cap.isOpened():
+        print(f"Error: Could not open video source: {video_source}")
+        return
 
-        print(f"Video stream opened from {video_url} for stream ID: {stream_id}")
+    ret, frame = cap.read()
+    if not ret:
+        print(f"Error: Could not read first frame from: {video_source}")
+        cap.release()
+        return
 
-        old_gray = None
+    original_height, original_width = frame.shape[:2]
+    intermediate_width = original_width // DOWNSAMPLE_FACTOR
+    intermediate_height = original_height // DOWNSAMPLE_FACTOR
+    old_gray = cv2.resize(
+        cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY),
+        (intermediate_width, intermediate_height),
+        interpolation=cv2.INTER_NEAREST,
+    )
 
-        ret, frame = cap.read()
-        if not ret:
-            print(f"Error: Could not read first frame from stream {video_url}")
-            cap.release()
-            return
+    print("Starting optical flow stream generator...")
 
-        old_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-        while cap.isOpened():
+    try:
+        while True:
             ret, frame = cap.read()
             if not ret:
-                print(f"Stream {video_url} ended for stream ID: {stream_id}.")
+                print(f"End of video source: {video_source} or error reading frame.")
                 break
 
             frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            start_time = time.time()
+            downsampled_img = cv2.resize(
+                frame_gray,
+                (intermediate_width, intermediate_height),
+                interpolation=cv2.INTER_NEAREST,
+            )
 
-            flow_hsv_img = calculate_and_visualize_flow(old_gray, frame_gray)
+            flow_hsv_img = calculate_and_visualize_flow(old_gray, downsampled_img)
 
-            old_gray = frame_gray.copy()
+            old_gray = downsampled_img.copy()
 
-            try:
-                results = model(frame, verbose=False)
-                person_count = sum(1 for r in results[0].boxes.cls if int(r) == 0)
-                annotated_frame = results[0].plot()
+            pixelated_img = cv2.resize(
+                flow_hsv_img,
+                (original_width, original_height),
+                interpolation=cv2.INTER_NEAREST,
+            )
 
-                cv2.putText(
-                    annotated_frame,
-                    f"People Count: {person_count}",
-                    (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
-                    (0, 0, 255),
-                    2,
-                )
-            except NameError:
-                print("YOLO model is not loaded. Skipping inference.")
-                annotated_frame = frame.copy()
-                person_count = "N/A"
-                cv2.putText(
-                    annotated_frame,
-                    "YOLO model not loaded",
-                    (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
-                    (0, 0, 255),
-                    2,
-                )
+            ret, buffer = cv2.imencode(".jpg", pixelated_img)
+            if not ret:
+                print("Error encoding frame.")
+                continue
 
-            h_annotated, w_annotated = annotated_frame.shape[:2]
-            h_flow, w_flow = flow_hsv_img.shape[:2]
-
-            if h_annotated != h_flow:
-                flow_hsv_img = cv2.resize(
-                    flow_hsv_img, (int(w_flow * h_annotated / h_flow), h_annotated)
-                )
-                h_flow, w_flow = flow_hsv_img.shape[:2]
-
-            combined_frame = np.hstack((annotated_frame, flow_hsv_img))
-
-            end_time = time.time()
-            fps = 1 / (end_time - start_time)
-            print(f"Stream {stream_id} - FPS: {fps:.2f}, People Count: {person_count}")
-
-            _, buffer = cv2.imencode(".jpg", combined_frame)
             frame_bytes = buffer.tobytes()
 
             yield (
                 b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
             )
 
-        cap.release()
-        print(f"Video stream released for stream ID: {stream_id}")
+            await asyncio.sleep(0.03)
 
+    except asyncio.CancelledError:
+        print("Stream cancelled by client or server shutdown.")
+    except Exception as e:
+        print(f"An error occurred during streaming: {e}")
+    finally:
+        print("Releasing video capture resource.")
+        cap.release()
+        print("Optical flow stream generator stopped.")
+
+
+@router.get("/video_feed")
+async def video_feed():
     return StreamingResponse(
-        generate(), media_type="multipart/x-mixed-replace;boundary=frame"
+        generate_optical_flow_stream(),
+        media_type="multipart/x-mixed-replace;boundary=frame",
     )
