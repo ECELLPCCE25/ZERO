@@ -1,7 +1,6 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import axios from "axios";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
@@ -10,7 +9,9 @@ const CameraList: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [idCounter, setIdCounter] = useState(0);
-  const [connectedCameras, setConnectedCameras] = useState<{ ip: string, id: number, visible: boolean }[]>([]);
+  const [connectedCameras, setConnectedCameras] = useState<{ ip: string, id: number, visible: boolean, pinned: boolean }[]>([]);
+  const [newIp, setNewIp] = useState("");
+  const [fullScreenCamera, setFullScreenCamera] = useState<{ ip: string, id: number } | null>(null);
 
   useEffect(() => {
     axios
@@ -41,10 +42,43 @@ const CameraList: React.FC = () => {
       const id = idCounter + Math.floor(Math.random() * 1000);
       setConnectedCameras((prevCameras) => [
         ...prevCameras,
-        { ip, id, visible: true },
+        { ip, id, visible: true, pinned: false },
       ]);
       setIdCounter((prev) => prev + 1);
     }
+  };
+
+  const handleSubmitNewIp = () => {
+    if (newIp.trim()) {
+      handleAddCamera(newIp.trim());
+      setNewIp(""); // Clear the input field after submission
+    }
+  };
+
+  const handlePinCamera = (ip: string, id: number) => {
+    setConnectedCameras((prevCameras) =>
+      prevCameras.map((camera) =>
+        camera.ip === ip ? { ...camera, pinned: true } : camera
+      )
+    );
+    setFullScreenCamera({ ip, id });
+  };
+
+  const handleUnpinCamera = () => {
+    setConnectedCameras((prevCameras) =>
+      prevCameras.map((camera) =>
+        camera.ip === fullScreenCamera?.ip ? { ...camera, pinned: false } : camera
+      )
+    );
+    setFullScreenCamera(null);
+  };
+
+  const handleDiscardCamera = (ip: string) => {
+    setConnectedCameras((prevCameras) =>
+      prevCameras.map((camera) =>
+        camera.ip === ip ? { ...camera, visible: false } : camera
+      )
+    );
   };
 
   if (loading) return <p>Scanning network...</p>;
@@ -63,18 +97,64 @@ const CameraList: React.FC = () => {
         ))}
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-        {connectedCameras.map(({ ip, id, visible }) => (
-          <Card key={ip} className="p-2" style={{ display: visible ? 'block' : 'none' }}>
-            <h3 className="text-sm font-semibold mb-2">{ip}</h3>
-            <img
-              src={`${process.env.NEXT_PUBLIC_BACKEND_URL}/ipcam?device=${ip}&id=${id}`}
-              alt={`Camera at ${ip}`}
-              className="w-full h-48 object-cover rounded"
-            />
-          </Card>
-        ))}
+      <div className="mb-4">
+        <input
+          type="text"
+          value={newIp}
+          onChange={(e) => setNewIp(e.target.value)}
+          placeholder="Enter new IP address"
+          className="border p-2 mr-2"
+        />
+        <Button onClick={handleSubmitNewIp}>Submit</Button>
       </div>
+
+      {fullScreenCamera ? (
+        <div className="fixed inset-0 bg-black flex items-center justify-center z-50">
+          <div className="relative w-full h-full">
+            <img
+              src={`${process.env.NEXT_PUBLIC_BACKEND_URL}/ipcam?device=${fullScreenCamera.ip}&id=${fullScreenCamera.id}`}
+              alt={`Camera at ${fullScreenCamera.ip}`}
+              className="w-full h-full object-contain"
+            />
+            <Button onClick={handleUnpinCamera} className="absolute top-4 right-4">Unpin</Button>
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          {connectedCameras.map(({ ip, id, visible, pinned }) => (
+            <Card
+              key={ip}
+              className="p-2 relative"
+              style={{ display: visible || pinned ? 'block' : 'none' }}
+              onMouseEnter={(e) => {
+                const card = e.currentTarget;
+                const options = card.querySelector(".options") as HTMLElement;
+                if (options) {
+                  options.style.display = "flex";
+                }
+              }}
+              onMouseLeave={(e) => {
+                const card = e.currentTarget;
+                const options = card.querySelector(".options") as HTMLElement;
+                if (options) {
+                  options.style.display = "none";
+                }
+              }}
+            >
+              <h3 className="text-sm font-semibold mb-2">{ip}</h3>
+              <img
+                src={`${process.env.NEXT_PUBLIC_BACKEND_URL}/ipcam?device=${ip}&id=${id}`}
+                alt={`Camera at ${ip}`}
+                className="w-full h-48 object-cover rounded"
+              />
+              <div className="options absolute top-2 right-2 flex space-x-2" style={{ display: 'none' }}>
+                <Button onClick={() => handlePinCamera(ip, id)}>Pin</Button>
+                <Button onClick={() => handleDiscardCamera(ip)}>Discard</Button>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
