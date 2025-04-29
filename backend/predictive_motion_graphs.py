@@ -69,6 +69,14 @@ CONVERGENCE_THRESHOLD_TINT_COLOR = (
 CONVERGENCE_THRESHOLD_OUTLINE_COLOR = (255, 255, 255)  # White color for the outline
 CONVERGENCE_THRESHOLD_OUTLINE_THICKNESS = 1  # Thin thickness for the outline
 
+# --- Prediction Parameters ---
+PREDICTION_STEPS = (
+    1  # Number of frames to predict into the future (e.g., 1 for next frame)
+)
+PREDICTION_COLOR = (0, 165, 255)  # Standard Orange color for predicted locations (BGR)
+PREDICTION_RADIUS = 5  # Radius of the circle marker for prediction
+PREDICTION_FADE_FRAMES = 30  # Number of frames for the prediction marker to fade out
+
 # --- Frame Resizing Parameter ---
 MAX_WIDTH = 640  # Maximum width for displayed frames (Increased for better detail)
 
@@ -79,7 +87,7 @@ MORPH_KERNEL = np.ones((5, 5), np.uint8)  # Example kernel size
 
 # Open the video source
 # cap = cv2.VideoCapture(0)  # Use camera
-cap = cv2.VideoCapture("dataset/4.mp4")  # Use video file
+cap = cv2.VideoCapture("dataset/1.mp4")  # Use video file
 
 # Check if the video source opened successfully
 if not cap.isOpened():
@@ -89,6 +97,7 @@ if not cap.isOpened():
 # Get original frame dimensions
 original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
 
 # Calculate new dimensions if max_width is exceeded, maintaining aspect ratio
 if original_width > MAX_WIDTH:
@@ -120,6 +129,9 @@ hsv[..., 1] = 255  # Set saturation to maximum
 
 # Deque to store recent flow fields for temporal smoothing
 flow_history = deque(maxlen=TEMPORAL_SMOOTHING_FRAMES)
+
+# List to store active predictions (each is a tuple: (x, y, age))
+active_predictions = []
 
 # --- Calculate Grid Dimensions based on NUM_GRID_CELLS and Aspect Ratio ---
 # Calculate the aspect ratio of the resized frame
@@ -159,12 +171,34 @@ print(f"Calculated grid size: {grid_rows}x{grid_cols} ({grid_rows * grid_cols} c
 print(f"Cell dimensions: {cell_width}x{cell_height}")
 
 
-# Setup the matplotlib figure for the quiver plot
+# Setup the matplotlib figure for the quiver plot (keeping this separate)
 plt.figure("Optical Flow Quiver Plot")
 plt.ion()  # Turn on interactive mode
-ax = plt.gca()  # Get the axes object
+ax_quiver = plt.gca()  # Get the axes object for the quiver plot
+
+# --- Setup Matplotlib Figure for Live Anomaly Plots ---
+fig_anomalies, axes_anomalies = plt.subplots(
+    grid_rows, grid_cols, figsize=(grid_cols * 4, grid_rows * 3)
+)
+# Flatten the axes array for easy iteration if it's a 2D array
+if grid_rows > 1 or grid_cols > 1:
+    axes_anomalies = axes_anomalies.flatten()
+else:
+    # If it's a single subplot, axes is not an array, make it a list for iteration
+    axes_anomalies = [axes_anomalies]
+
+plt.ion()  # Turn on interactive mode for anomaly plots
+plt.show(block=False)  # Show the anomaly plots without blocking
+
+# --- Data Storage for Anomaly and Prediction Counts per Cell ---
+frame_count = 0
+# Lists to store historical counts for each cell
+actual_anomaly_counts_history = [[] for _ in range(grid_rows * grid_cols)]
+predicted_anomaly_counts_history = [[] for _ in range(grid_rows * grid_cols)]
+
 
 print("Press 'q' to exit.")
+
 
 while True:
     # Read the next frame
@@ -182,6 +216,9 @@ while True:
                 break
         else:  # If it's a camera or cannot loop
             break
+
+    # Increment frame count
+    frame_count += 1
 
     # Resize the current frame
     frame2_resized = cv2.resize(frame2, (new_width, new_height))
@@ -270,7 +307,11 @@ while True:
     cell_height = max(1, cell_height)  # Ensure at least 1 pixel
 
     is_cell_generally_dangerous = np.zeros((grid_rows, grid_cols), dtype=bool)
-    meets_convergence_threshold = np.zeros((grid_rows, grid_cols), dtype=bool)
+    current_convergence_cell_centers = []  # Store centers of convergence cells for this frame
+
+    # --- Initialize current frame's anomaly and prediction counts for this frame ---
+    current_actual_counts_frame = np.zeros((grid_rows, grid_cols), dtype=int)
+    current_predicted_counts_frame = np.zeros((grid_rows, grid_cols), dtype=int)
 
     for r in range(grid_rows):
         for c in range(grid_cols):
@@ -279,19 +320,138 @@ while True:
             cx1 = c * cell_width
             cx2 = min(new_width, cx1 + cell_width)  # Clamp bounds
 
-            # Check if any dangerous region centers fall into this cell
+            # Check if any dangerous region centers fall into this cell (Actual Anomalies)
             for center_x, center_y in dangerous_centers:
                 if cx1 <= center_x < cx2 and cy1 <= center_y < cy2:
                     is_cell_generally_dangerous[r, c] = True
-                    break  # No need to check other centers for this cell
+                    # Count actual anomaly in this cell for this frame
+                    current_actual_counts_frame[r, c] += 1
+                    # Note: A single danger region can span multiple cells,
+                    # its center is counted in only one cell.
 
             # Check if the minimum divergence in this cell meets the convergence threshold
             if cy1 < cy2 and cx1 < cx2:  # Ensure the slice is valid
                 cell_divergence = divergence[cy1:cy2, cx1:cx2]
                 if cell_divergence.size > 0:
-                    # Highlight if the minimum divergence is below the threshold (more negative)
+                    # If the minimum divergence is below the threshold (more negative)
                     if np.min(cell_divergence) < CONVERGENCE_THRESHOLD:
-                        meets_convergence_threshold[r, c] = True
+                        # Store the center of the convergence cell for prediction
+                        current_convergence_cell_centers.append(
+                            (cx1 + cell_width // 2, cy1 + cell_height // 2)
+                        )
+
+    # --- Generate New Predictions ---
+    new_predictions = []
+    for center_x, center_y in current_convergence_cell_centers:
+        # Get the flow vector at the center of the convergence cell
+        # Note: This is a simplification.
+        flow_at_center_u = temporally_smoothed_flow[int(center_y), int(center_x), 0]
+        flow_at_center_v = temporally_smoothed_flow[int(center_y), int(center_x), 1]
+
+        # Predict the future center position
+        predicted_center_x = center_x + flow_at_center_u * PREDICTION_STEPS
+        predicted_center_y = center_y + flow_at_center_v * PREDICTION_STEPS
+
+        # Clamp predicted positions to stay within frame bounds
+        predicted_center_x = np.clip(predicted_center_x, 0, new_width - 1)
+        predicted_center_y = np.clip(predicted_center_y, 0, new_height - 1)
+
+        # Add the new prediction with full age
+        new_predictions.append(
+            (int(predicted_center_x), int(predicted_center_y), PREDICTION_FADE_FRAMES)
+        )
+
+    # Add new predictions to the active list
+    active_predictions.extend(new_predictions)
+
+    # --- Update and Filter Active Predictions (for fading) ---
+    # Decrement age and keep only predictions with age > 0
+    updated_predictions = []
+    for pred_x, pred_y, age in active_predictions:
+        new_age = age - 1
+        if new_age > 0:
+            updated_predictions.append((pred_x, pred_y, new_age))
+    active_predictions = updated_predictions
+
+    # --- Count Predicted Anomalies per Cell for this frame ---
+    for pred_x, pred_y, age in active_predictions:
+        # Determine which cell the prediction falls into
+        cell_c = int(pred_x // cell_width)
+        cell_r = int(pred_y // cell_height)
+
+        # Ensure indices are within bounds
+        cell_c = np.clip(cell_c, 0, grid_cols - 1)
+        cell_r = np.clip(cell_r, 0, grid_rows - 1)
+
+        # Count predicted anomaly in this cell for this frame
+        current_predicted_counts_frame[cell_r, cell_c] += 1
+
+    # --- Store counts for the current frame in history lists ---
+    cell_index = 0
+    for r in range(grid_rows):
+        for c in range(grid_cols):
+            actual_anomaly_counts_history[cell_index].append(
+                current_actual_counts_frame[r, c]
+            )
+            predicted_anomaly_counts_history[cell_index].append(
+                current_predicted_counts_frame[r, c]
+            )
+            cell_index += 1
+
+    # --- Update Live Anomaly Plots ---
+    time_axis = np.arange(frame_count)  # Time axis up to the current frame
+    cell_index = 0
+    for r in range(grid_rows):
+        for c in range(grid_cols):
+            ax = axes_anomalies[cell_index]
+            ax.cla()  # Clear previous plot data
+
+            # Plot actual and predicted counts up to the current frame
+            ax.plot(
+                time_axis,
+                actual_anomaly_counts_history[cell_index],
+                label="Actual Anomalies",
+                color="blue",
+            )
+            ax.plot(
+                time_axis,
+                predicted_anomaly_counts_history[cell_index],
+                label="Predicted Anomalies",
+                color="red",
+                linestyle="--",
+            )
+
+            # Set title and labels
+            ax.set_title(f"Cell ({r}, {c})")
+            ax.set_xlabel("Frame Number")
+            ax.set_ylabel("Number of Anomalies")
+            ax.legend()
+            ax.grid(True)
+            # Ensure x-axis limits update
+            ax.set_xlim(
+                0, max(1, frame_count - 1)
+            )  # Set x-limit to current frame number
+            ax.set_ylim(
+                0,
+                max(
+                    1,
+                    max(
+                        max(actual_anomaly_counts_history[cell_index])
+                        if actual_anomaly_counts_history[cell_index]
+                        else 0,
+                        max(predicted_anomaly_counts_history[cell_index])
+                        if predicted_anomaly_counts_history[cell_index]
+                        else 0,
+                    )
+                    + 1,
+                ),
+            )  # Dynamic y-limit
+
+            cell_index += 1
+
+    plt.tight_layout()
+    plt.draw()  # Redraw the anomaly plots
+    plt.pause(0.001)  # Pause briefly to allow plot to update
 
     # Draw grid lines
     for i in range(1, grid_cols):
@@ -336,32 +496,58 @@ while True:
                 )
 
     # --- Highlight Cells Meeting Convergence Threshold (Tint and Outline) ---
-    for row in range(grid_rows):
-        for col in range(grid_cols):
-            if meets_convergence_threshold[row, col]:
-                # Calculate the corners of the current convergence threshold grid cell
-                hc_cx1 = col * cell_width
-                hc_cy1 = row * cell_height
-                hc_cx2 = min(new_width, hc_cx1 + cell_width)  # Clamp bounds
-                hc_cy2 = min(new_height, hc_cy1 + cell_height)  # Clamp bounds
+    # We will highlight the *current* convergence cells before drawing predictions
+    for r in range(grid_rows):
+        for c in range(grid_cols):
+            cy1 = r * cell_height
+            cy2 = min(new_height, cy1 + cell_height)  # Clamp bounds
+            cx1 = c * cell_width
+            cx2 = min(new_width, cx1 + cell_width)  # Clamp bounds
 
-                # Apply blue tint to the cell area
-                if hc_cy1 < hc_cy2 and hc_cx1 < hc_cx2:  # Ensure the slice is valid
-                    display_frame[hc_cy1:hc_cy2, hc_cx1:hc_cx2] = np.clip(
-                        display_frame[hc_cy1:hc_cy2, hc_cx1:hc_cx2].astype(np.float32)
+            if cy1 < cy2 and cx1 < cx2:  # Ensure slice is valid
+                cell_divergence = divergence[cy1:cy2, cx1:cx2]
+                if (
+                    cell_divergence.size > 0
+                    and np.min(cell_divergence) < CONVERGENCE_THRESHOLD
+                ):
+                    # Apply blue tint to the cell area
+                    display_frame[cy1:cy2, cx1:cx2] = np.clip(
+                        display_frame[cy1:cy2, cx1:cx2].astype(np.float32)
                         + CONVERGENCE_THRESHOLD_TINT_COLOR,
                         0,
                         255,
                     ).astype(np.uint8)
 
-                # Draw a thin white outline around the cell
-                cv2.rectangle(
-                    display_frame,
-                    (hc_cx1, hc_cy1),
-                    (hc_cx2, hc_cy2),
-                    CONVERGENCE_THRESHOLD_OUTLINE_COLOR,
-                    CONVERGENCE_THRESHOLD_OUTLINE_THICKNESS,
-                )
+                    # Draw a thin white outline around the cell
+                    cv2.rectangle(
+                        display_frame,
+                        (cx1, cy1),
+                        (cx2, cy2),
+                        CONVERGENCE_THRESHOLD_OUTLINE_COLOR,
+                        CONVERGENCE_THRESHOLD_OUTLINE_THICKNESS,
+                    )
+
+    # --- Draw Fading Predictions (Circles) ---
+    # Create an overlay for drawing semi-transparent circles
+    overlay = display_frame.copy()
+
+    for pred_x, pred_y, age in active_predictions:
+        # Calculate alpha based on age (linear fade)
+        alpha = age / PREDICTION_FADE_FRAMES
+        # Ensure alpha is between 0 and 1
+        alpha = np.clip(alpha, 0, 1)
+
+        # Draw the filled circle on the overlay
+        cv2.circle(
+            overlay,
+            (pred_x, pred_y),
+            PREDICTION_RADIUS,
+            PREDICTION_COLOR,
+            -1,  # Filled circle
+        )
+
+        # Blend the overlay with the main frame
+        cv2.addWeighted(overlay, alpha, display_frame, 1 - alpha, 0, display_frame)
 
     # --- Color-Coded Flow Visualization (Optional, can comment out imshow) ---
     # Compute the magnitude and angle of the smoothed flow vectors
@@ -410,8 +596,8 @@ while True:
             cmap = plt.colormaps.get_cmap("hsv")
             colors = cmap(normalized_angles)
 
-            ax.cla()
-            ax.quiver(
+            ax_quiver.cla()
+            ax_quiver.quiver(
                 x_coords_valid,
                 y_coords_valid,
                 u_vectors_valid,
@@ -422,42 +608,42 @@ while True:
                 scale_units="xy",
                 pivot="mid",
             )
-            ax.invert_yaxis()
-            ax.set_aspect("equal", adjustable="box")
-            ax.set_xlim(0, w)
-            ax.set_ylim(h, 0)
-            ax.set_title(
+            ax_quiver.invert_yaxis()
+            ax_quiver.set_aspect("equal", adjustable="box")
+            ax_quiver.set_xlim(0, w)
+            ax_quiver.set_ylim(h, 0)
+            ax_quiver.set_title(
                 "Estimated Flow Field (Quiver Plot - Direction Color, Max Length)"
             )
-            ax.set_xlabel("X-coordinate")
-            ax.set_ylabel("Y-coordinate")
+            ax_quiver.set_xlabel("X-coordinate")
+            ax_quiver.set_ylabel("Y-coordinate")
             plt.draw()
             plt.pause(0.001)
         else:
-            ax.cla()
-            ax.set_aspect("equal", adjustable="box")
-            ax.set_xlim(0, w)
-            ax.set_ylim(h, 0)
-            ax.set_title("Estimated Flow Field (Quiver Plot - No Valid Vectors)")
-            ax.set_xlabel("X-coordinate")
-            ax.set_ylabel("Y-coordinate")
+            ax_quiver.cla()
+            ax_quiver.set_aspect("equal", adjustable="box")
+            ax_quiver.set_xlim(0, w)
+            ax_quiver.set_ylim(h, 0)
+            ax_quiver.set_title("Estimated Flow Field (Quiver Plot - No Valid Vectors)")
+            ax_quiver.set_xlabel("X-coordinate")
+            ax_quiver.set_ylabel("Y-coordinate")
             plt.draw()
             plt.pause(0.001)
     else:
-        ax.cla()
-        ax.set_aspect("equal", adjustable="box")
-        ax.set_xlim(0, w)
-        ax.set_ylim(h, 0)
-        ax.set_title("Estimated Flow Field (Quiver Plot - No Grid Points)")
-        ax.set_xlabel("X-coordinate")
-        ax.set_ylabel("Y-coordinate")
+        ax_quiver.cla()
+        ax_quiver.set_aspect("equal", adjustable="box")
+        ax_quiver.set_xlim(0, w)
+        ax_quiver.set_ylim(h, 0)
+        ax_quiver.set_title("Estimated Flow Field (Quiver Plot - No Grid Points)")
+        ax_quiver.set_xlabel("X-coordinate")
+        ax_quiver.set_ylabel("Y-coordinate")
         plt.draw()
         plt.pause(0.001)
 
     # --- Display Windows ---
-    # Display the main frame with rectangles, grid, and highlight
+    # Display the main frame with rectangles, grid, highlight, and predictions
     cv2.imshow(
-        "Webcam Feed + Crowd Analysis (Danger Regions & Convergence Threshold Highlight)",
+        "Webcam Feed + Crowd Analysis (Danger Regions, Convergence Highlight & Fading Prediction)",
         display_frame,
     )
 
@@ -473,7 +659,8 @@ while True:
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
-# Close the matplotlib plot window
+# Close the matplotlib plot windows
+plt.close(fig_anomalies)
 plt.close("Optical Flow Quiver Plot")
 # Release the VideoCapture object and close all OpenCV windows
 cap.release()

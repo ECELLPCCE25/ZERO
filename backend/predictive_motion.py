@@ -69,6 +69,14 @@ CONVERGENCE_THRESHOLD_TINT_COLOR = (
 CONVERGENCE_THRESHOLD_OUTLINE_COLOR = (255, 255, 255)  # White color for the outline
 CONVERGENCE_THRESHOLD_OUTLINE_THICKNESS = 1  # Thin thickness for the outline
 
+# --- Prediction Parameters ---
+PREDICTION_STEPS = (
+    1  # Number of frames to predict into the future (e.g., 1 for next frame)
+)
+PREDICTION_COLOR = (0, 165, 255)  # Standard Orange color for predicted locations (BGR)
+PREDICTION_RADIUS = 5  # Radius of the circle marker for prediction
+PREDICTION_FADE_FRAMES = 30  # Number of frames for the prediction marker to fade out
+
 # --- Frame Resizing Parameter ---
 MAX_WIDTH = 640  # Maximum width for displayed frames (Increased for better detail)
 
@@ -79,7 +87,7 @@ MORPH_KERNEL = np.ones((5, 5), np.uint8)  # Example kernel size
 
 # Open the video source
 # cap = cv2.VideoCapture(0)  # Use camera
-cap = cv2.VideoCapture("dataset/4.mp4")  # Use video file
+cap = cv2.VideoCapture("dataset/5.mp4")  # Use video file
 
 # Check if the video source opened successfully
 if not cap.isOpened():
@@ -89,6 +97,7 @@ if not cap.isOpened():
 # Get original frame dimensions
 original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
 
 # Calculate new dimensions if max_width is exceeded, maintaining aspect ratio
 if original_width > MAX_WIDTH:
@@ -120,6 +129,9 @@ hsv[..., 1] = 255  # Set saturation to maximum
 
 # Deque to store recent flow fields for temporal smoothing
 flow_history = deque(maxlen=TEMPORAL_SMOOTHING_FRAMES)
+
+# List to store active predictions (each is a tuple: (x, y, age))
+active_predictions = []
 
 # --- Calculate Grid Dimensions based on NUM_GRID_CELLS and Aspect Ratio ---
 # Calculate the aspect ratio of the resized frame
@@ -270,7 +282,7 @@ while True:
     cell_height = max(1, cell_height)  # Ensure at least 1 pixel
 
     is_cell_generally_dangerous = np.zeros((grid_rows, grid_cols), dtype=bool)
-    meets_convergence_threshold = np.zeros((grid_rows, grid_cols), dtype=bool)
+    current_convergence_cell_centers = []  # Store centers of convergence cells for this frame
 
     for r in range(grid_rows):
         for c in range(grid_cols):
@@ -289,9 +301,45 @@ while True:
             if cy1 < cy2 and cx1 < cx2:  # Ensure the slice is valid
                 cell_divergence = divergence[cy1:cy2, cx1:cx2]
                 if cell_divergence.size > 0:
-                    # Highlight if the minimum divergence is below the threshold (more negative)
+                    # If the minimum divergence is below the threshold (more negative)
                     if np.min(cell_divergence) < CONVERGENCE_THRESHOLD:
-                        meets_convergence_threshold[r, c] = True
+                        # Store the center of the convergence cell for prediction
+                        current_convergence_cell_centers.append(
+                            (cx1 + cell_width // 2, cy1 + cell_height // 2)
+                        )
+
+    # --- Generate New Predictions ---
+    new_predictions = []
+    for center_x, center_y in current_convergence_cell_centers:
+        # Get the flow vector at the center of the convergence cell
+        # Note: This is a simplification.
+        flow_at_center_u = temporally_smoothed_flow[int(center_y), int(center_x), 0]
+        flow_at_center_v = temporally_smoothed_flow[int(center_y), int(center_x), 1]
+
+        # Predict the future center position
+        predicted_center_x = center_x + flow_at_center_u * PREDICTION_STEPS
+        predicted_center_y = center_y + flow_at_center_v * PREDICTION_STEPS
+
+        # Clamp predicted positions to stay within frame bounds
+        predicted_center_x = np.clip(predicted_center_x, 0, new_width - 1)
+        predicted_center_y = np.clip(predicted_center_y, 0, new_height - 1)
+
+        # Add the new prediction with full age
+        new_predictions.append(
+            (int(predicted_center_x), int(predicted_center_y), PREDICTION_FADE_FRAMES)
+        )
+
+    # Add new predictions to the active list
+    active_predictions.extend(new_predictions)
+
+    # --- Update and Filter Active Predictions (for fading) ---
+    # Decrement age and keep only predictions with age > 0
+    updated_predictions = []
+    for pred_x, pred_y, age in active_predictions:
+        new_age = age - 1
+        if new_age > 0:
+            updated_predictions.append((pred_x, pred_y, new_age))
+    active_predictions = updated_predictions
 
     # Draw grid lines
     for i in range(1, grid_cols):
@@ -336,32 +384,58 @@ while True:
                 )
 
     # --- Highlight Cells Meeting Convergence Threshold (Tint and Outline) ---
-    for row in range(grid_rows):
-        for col in range(grid_cols):
-            if meets_convergence_threshold[row, col]:
-                # Calculate the corners of the current convergence threshold grid cell
-                hc_cx1 = col * cell_width
-                hc_cy1 = row * cell_height
-                hc_cx2 = min(new_width, hc_cx1 + cell_width)  # Clamp bounds
-                hc_cy2 = min(new_height, hc_cy1 + cell_height)  # Clamp bounds
+    # We will highlight the *current* convergence cells before drawing predictions
+    for r in range(grid_rows):
+        for c in range(grid_cols):
+            cy1 = r * cell_height
+            cy2 = min(new_height, cy1 + cell_height)  # Clamp bounds
+            cx1 = c * cell_width
+            cx2 = min(new_width, cx1 + cell_width)  # Clamp bounds
 
-                # Apply blue tint to the cell area
-                if hc_cy1 < hc_cy2 and hc_cx1 < hc_cx2:  # Ensure the slice is valid
-                    display_frame[hc_cy1:hc_cy2, hc_cx1:hc_cx2] = np.clip(
-                        display_frame[hc_cy1:hc_cy2, hc_cx1:hc_cx2].astype(np.float32)
+            if cy1 < cy2 and cx1 < cx2:  # Ensure slice is valid
+                cell_divergence = divergence[cy1:cy2, cx1:cx2]
+                if (
+                    cell_divergence.size > 0
+                    and np.min(cell_divergence) < CONVERGENCE_THRESHOLD
+                ):
+                    # Apply blue tint to the cell area
+                    display_frame[cy1:cy2, cx1:cx2] = np.clip(
+                        display_frame[cy1:cy2, cx1:cx2].astype(np.float32)
                         + CONVERGENCE_THRESHOLD_TINT_COLOR,
                         0,
                         255,
                     ).astype(np.uint8)
 
-                # Draw a thin white outline around the cell
-                cv2.rectangle(
-                    display_frame,
-                    (hc_cx1, hc_cy1),
-                    (hc_cx2, hc_cy2),
-                    CONVERGENCE_THRESHOLD_OUTLINE_COLOR,
-                    CONVERGENCE_THRESHOLD_OUTLINE_THICKNESS,
-                )
+                    # Draw a thin white outline around the cell
+                    cv2.rectangle(
+                        display_frame,
+                        (cx1, cy1),
+                        (cx2, cy2),
+                        CONVERGENCE_THRESHOLD_OUTLINE_COLOR,
+                        CONVERGENCE_THRESHOLD_OUTLINE_THICKNESS,
+                    )
+
+    # --- Draw Fading Predictions (Circles) ---
+    # Create an overlay for drawing semi-transparent circles
+    overlay = display_frame.copy()
+
+    for pred_x, pred_y, age in active_predictions:
+        # Calculate alpha based on age (linear fade)
+        alpha = age / PREDICTION_FADE_FRAMES
+        # Ensure alpha is between 0 and 1
+        alpha = np.clip(alpha, 0, 1)
+
+        # Draw the filled circle on the overlay
+        cv2.circle(
+            overlay,
+            (pred_x, pred_y),
+            PREDICTION_RADIUS,
+            PREDICTION_COLOR,
+            -1,  # Filled circle
+        )
+
+        # Blend the overlay with the main frame
+        cv2.addWeighted(overlay, alpha, display_frame, 1 - alpha, 0, display_frame)
 
     # --- Color-Coded Flow Visualization (Optional, can comment out imshow) ---
     # Compute the magnitude and angle of the smoothed flow vectors
@@ -455,9 +529,9 @@ while True:
         plt.pause(0.001)
 
     # --- Display Windows ---
-    # Display the main frame with rectangles, grid, and highlight
+    # Display the main frame with rectangles, grid, highlight, and predictions
     cv2.imshow(
-        "Webcam Feed + Crowd Analysis (Danger Regions & Convergence Threshold Highlight)",
+        "Webcam Feed + Crowd Analysis (Danger Regions, Convergence Highlight & Fading Prediction)",
         display_frame,
     )
 
