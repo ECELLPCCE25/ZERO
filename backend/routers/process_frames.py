@@ -146,6 +146,13 @@ def generate_quiver_plot_base64(
             )
             return None  # Return None if no flow values to plot
 
+        logging.info(
+            f"Quiver plot data shapes: y_coords={y_coords.shape}, x_coords={x_coords.shape}, u_values={u_values.shape}, v_values={v_values.shape}"
+        )
+        logging.info(
+            f"Quiver plot data sizes: y_coords={y_coords.size}, x_coords={x_coords.size}, u_values={u_values.size}, v_values={v_values.size}"
+        )
+
         # Calculate magnitudes for normalization and coloring
         magnitudes = np.sqrt(u_values**2 + v_values**2)
         max_magnitude = np.max(magnitudes)
@@ -184,12 +191,16 @@ def generate_quiver_plot_base64(
             # This ensures the color array has the correct shape (N, 4)
             colors = np.tile(mcolors.to_rgba("blue"), (u_values.size, 1))
 
+        logging.info(f"Colors array shape: {colors.shape}, size: {colors.size}")
+
         # Create the quiver plot
         # x_coords, y_coords are the starting points of the arrows
         # u_display, v_display are the components of the arrows
         # Ensure x_coords, y_coords, u_display, v_display, and colors all have compatible sizes.
         if not (x_coords.shape == y_coords.shape == u_display.shape == v_display.shape):
-            logging.error("Shape mismatch in quiver plot data.")
+            logging.error(
+                f"Shape mismatch in quiver plot data: x_coords={x_coords.shape}, y_coords={y_coords.shape}, u_display={u_display.shape}, v_display={v_display.shape}"
+            )
             plt.close(fig)
             return None
 
