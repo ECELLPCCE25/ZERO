@@ -17,7 +17,8 @@ load_dotenv()
 # Initialize Supabase client
 supabase_url = os.getenv("SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(supabase_url, supabase_key)
+supabase = create_client(supabase_url, supabase_key)
+
 
 router = APIRouter()
 model = YOLO("yolov8n.pt")
@@ -27,7 +28,7 @@ connected_cameras = {}
 person_count_data = {}
 
 # Threshold for triggering an alert
-PERSON_COUNT_THRESHOLD = 5
+PERSON_COUNT_THRESHOLD = 2
 
 @router.websocket("/ws/{stream_id}")
 async def websocket_endpoint(websocket: WebSocket, stream_id: str):
@@ -107,7 +108,7 @@ async def ipcam_endpoint(device: str = Query(...), id: str = Query(...), user_id
 
                 # Check if person count exceeds the threshold
                 if person_count > PERSON_COUNT_THRESHOLD:
-                    trigger_alert(id, person_count)
+                    trigger_alert(id, person_count, name=name)
         finally:
             cap.release()
             if device in connected_cameras:
@@ -150,8 +151,22 @@ def draw_boxes(frame, results):
         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
     return annotated_frame
 
-def trigger_alert(stream_id, person_count):
+def trigger_alert(stream_id, person_count, name: str):
     logging.warning(f"Alert! Person count ({person_count}) exceeds the threshold for stream ID: {stream_id}")
+
+    # Use async method to broadcast to Supabase Realtime
+    supabase.channel("camera_updates").send(
+        {
+            "type": "broadcast",
+            "event": "UPDATE",
+            "payload": {
+                "stream_id": stream_id,
+                "person_count": person_count,
+                "message": f"Persons overcrowded at {name}",
+            }
+        }
+    )
+
 
 def store_person_count_data(stream_id: str, user_id: str = None, name: str = None):
     if stream_id in person_count_data and person_count_data[stream_id]:
