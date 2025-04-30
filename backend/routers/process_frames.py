@@ -77,29 +77,34 @@ QUIVER_STEP = 16  # Adjust this value to change the density of arrows
 MAX_ARROW_DISPLAY_LENGTH = 50.0  # Desired max length of the longest arrow in plot units
 
 
-gpu_available = False
+# --- CUDA Availability Check ---
+gpu_available = False  # Initialize gpu_available flag
 try:
     # Check if OpenCV CUDA is available and can be initialized
     # Creating a GpuMat or checking device count can trigger initialization errors
     if cv2.cuda.getCudaEnabledDeviceCount() > 0:
-        cv2.cuda.GpuMat()  # Attempt to create a GpuMat to ensure initialization works
+        # Attempt to create a GpuMat to ensure initialization works
+        gpu_test_mat = cv2.cuda.GpuMat(
+            10, 10, cv2.CV_8UC1
+        )  # Create a small dummy GpuMat
+        gpu_available = True  # Set to True only if GpuMat creation succeeds
         logging.info("OpenCV CUDA device detected and initialized.")
-        gpu_available = True
     else:
         logging.warning(
             "OpenCV CUDA is enabled but no devices found. Falling back to CPU."
         )
+        gpu_available = False  # Explicitly set to False
 
 except cv2.error as e:
     logging.warning(
         f"OpenCV CUDA not available or initialized: {e}. Falling back to CPU."
     )
-    gpu_available = False
+    gpu_available = False  # Explicitly set to False
 except Exception as e:
     logging.error(
         f"An unexpected error occurred checking for CUDA: {e}. Falling back to CPU."
     )
-    gpu_available = False
+    gpu_available = False  # Explicitly set to False
 
 
 def generate_quiver_plot_base64(
@@ -114,72 +119,63 @@ def generate_quiver_plot_base64(
     Generates a base64 encoded Matplotlib quiver plot of the optical flow.
     """
     try:
+        # Ensure step is at least 1 to avoid infinite loops or invalid slicing
+        step = max(1, step)
+
+        # Generate coordinates for the quiver plot
+        # Start from step//2 to center the arrows in the grid cells
         y_coords, x_coords = np.mgrid[
             step // 2 : height : step, step // 2 : width : step
         ]
+
+        # Ensure coordinates are within bounds
+        y_coords = np.clip(y_coords, 0, height - 1)
+        x_coords = np.clip(x_coords, 0, width - 1)
+
+        # Extract flow values at the selected coordinates
         u_values = flow_u[y_coords, x_coords]
         v_values = flow_v[y_coords, x_coords]
 
-        # Calculate magnitudes for normalization
+        # Calculate magnitudes for normalization and coloring
         magnitudes = np.sqrt(u_values**2 + v_values**2)
         max_magnitude = np.max(magnitudes)
 
-        # Normalize vectors for consistent arrow length display
-        if max_magnitude > 1e-6:  # Avoid division by zero or very small numbers
-            u_normalized = u_values / max_magnitude
-            v_normalized = v_values / max_magnitude
-        else:
-            u_normalized = u_values
-            v_normalized = v_values
-
         plt.ioff()  # Turn off interactive mode for plot generation
-        fig, ax = plt.subplots(
-            figsize=(width / 100, height / 100), dpi=100
-        )  # Adjust figure size
+        # Adjust figure size based on image dimensions for better aspect ratio in the plot
+        fig, ax = plt.subplots(figsize=(width / 100.0, height / 100.0), dpi=100)
 
-        # Quiver plot - note: origin='upper' to match image coordinates
-        # The 'scale' parameter controls arrow length. Larger scale means shorter arrows for the same unit length.
-        # We want max_display_length to correspond to the max_magnitude after normalization (which is 1).
-        # So, scale should be such that arrow length 1 in data units corresponds to max_display_length in plot units.
-        # Matplotlib's scale is data units per arrow length unit.
-        # If we normalize vectors to max_magnitude=1, we want arrow length 1 to map to max_display_length.
-        # Quiver scales arrows by their data units. An arrow (u,v) has length sqrt(u^2+v^2).
-        # After normalization, max length is 1. We want this to display as max_display_length.
-        # Let's use scale = 1 / max_display_length, assuming display units are relative to axis limits (which quiver does).
-        # Quiver is tricky with scaling; let's use angles and magnitude for color and a fixed display length for clarity.
-        # We can scale the vectors directly to control display length relative to the grid step.
-        # Let's try scaling so max arrow length is proportional to the step, e.g., 0.8 * step
-        max_arrow_data_length = (
-            0.8 * step
-        )  # Max arrow length in data coordinates (pixels)
+        # Scale vectors for consistent arrow length display
+        # We want the maximum arrow length in the plot to be proportional to the step size.
+        # A common approach is to make the longest arrow about 80% of the step.
+        max_arrow_data_length = 0.8 * step
 
-        if max_magnitude > 1e-6:
-            u_display = (
-                u_values
-                / magnitudes
-                * max_arrow_data_length
-                * (magnitudes / max_magnitude)
-            )
-            v_display = (
-                v_values
-                / magnitudes
-                * max_arrow_data_length
-                * (magnitudes / max_magnitude)
-            )
-            # Use angles for color
-            angles = np.arctan2(
-                -v_values, -u_values
-            )  # Note: y-axis is inverted in images, flow is opposite direction
-            angles = np.rad2deg(angles)  # Convert to degrees
-            # Map angles to hue (0-180 for OpenCV's HSV hue, 0-360 for Matplotlib's colormaps)
+        if max_magnitude > 1e-6:  # Avoid division by zero or very small numbers
+            # Scale flow vectors so the longest vector has a display length of max_arrow_data_length
+            scale_factor = max_arrow_data_length / max_magnitude
+            u_display = u_values * scale_factor
+            v_display = v_values * scale_factor
+
+            # Use angles for color mapping (Hue)
+            # arctan2 returns values in [-pi, pi]. Convert to [0, 2*pi] for hue mapping.
+            # Note: y-axis is inverted in images (origin top-left), flow is opposite direction for visualization
+            angles_rad = np.arctan2(-v_values, -u_values)
+            angles_deg = np.rad2deg(angles_rad)  # Convert to degrees [-180, 180]
+            # Shift range to [0, 360] for hue colormap
+            angles_normalized = (angles_deg + 360) % 360
+
+            # Map angles to hue (0-360) using a circular colormap like 'hsv'
             norm = mcolors.Normalize(vmin=0, vmax=360)
             cmap = cm.hsv  # HSV colormap
-            colors = cmap(norm((angles + 360) % 360))  # Ensure angles are positive
+            colors = cmap(norm(angles_normalized))
         else:
+            # If no significant flow, draw small blue arrows or dots
             u_display = np.zeros_like(u_values)
             v_display = np.zeros_like(v_values)
             colors = "blue"  # Default color if no flow
 
+        # Create the quiver plot
+        # x_coords, y_coords are the starting points of the arrows
+        # u_display, v_display are the components of the arrows
         ax.quiver(
             x_coords,
             y_coords,
@@ -189,17 +185,24 @@ def generate_quiver_plot_base64(
             angles="xy",  # Interpret U,V as x,y components
             scale_units="xy",  # Match scaling to x,y units
             scale=1,  # No additional scaling needed if vectors are already scaled
-            pivot="mid",  # Pivot arrow from the center
+            pivot="mid",  # Pivot arrow from the center of the point
+            width=0.005 * step,  # Adjust arrow width based on step size
         )
 
+        # Set plot limits and invert y-axis to match image coordinates
         ax.set_xlim(0, width)
         ax.set_ylim(height, 0)  # Invert y-axis to match image coordinates
-        ax.set_aspect("equal", adjustable="box")  # Maintain aspect ratio
-        ax.axis("off")  # Hide axes
+
+        # Ensure aspect ratio is equal so flow directions are not distorted
+        ax.set_aspect("equal", adjustable="box")
+
+        # Hide axes and add a title
+        ax.axis("off")
         ax.set_title("Optical Flow Quiver Plot")
 
         # Save plot to a bytes buffer
         buf = io.BytesIO()
+        # Use bbox_inches='tight' and pad_inches=0 to remove padding around the plot
         plt.savefig(buf, format="png", bbox_inches="tight", pad_inches=0)
         plt.close(fig)  # Close the figure to free memory
 
@@ -222,7 +225,7 @@ def process_gpu(
     cell_width: int,
     cell_height: int,
     detection_results: Any,
-) -> tuple[np.ndarray, Dict[str, Any], List[Dict[str, int]]]:
+) -> tuple[np.ndarray, Dict[str, Any], cv2.cuda_GpuMat]:  # Return GpuMat for flow
     height, width = proc_height, proc_width
 
     stream = cv2.cuda_Stream()
@@ -231,6 +234,7 @@ def process_gpu(
     )
 
     flow_calc = cv2.cuda_FarnebackOpticalFlow.create()
+    # Output flow_data_gpu will be CV_32FC2
     flow_data_gpu = flow_calc.calc(
         prev_frame_gpu, current_gray_gpu, None, stream=stream
     )
@@ -238,28 +242,31 @@ def process_gpu(
     blur_filter_gpu = cv2.cuda.createGaussianFilter(
         cv2.CV_32FC2, cv2.CV_32FC2, SPATIAL_SMOOTHING_KERNEL_SIZE, 0
     )
-    # Note: apply might return a new GpuMat if output is None
+    # Apply spatial smoothing on the GPU
     smoothed_flow_gpu = blur_filter_gpu.apply(flow_data_gpu, stream=stream)
 
-    # Download smoothed flow data to CPU for divergence/curl/magnitude/prediction
+    # We need the flow data on CPU for divergence/curl/magnitude/prediction calculations
+    # Download smoothed flow data to CPU
     smoothed_flow_cpu = smoothed_flow_gpu.download(stream=stream)
     stream.waitForCompletion()  # Wait for download to complete
 
     flow_x = smoothed_flow_cpu[..., 0]
+    flow_y = smoothed_flow_cpu[
+        ..., 0
+    ]  # This seems incorrect, should be smoothed_flow_cpu[..., 1]. Correcting.
+    # Corrected:
     flow_y = smoothed_flow_cpu[..., 1]
 
-    # Calculate divergence and curl
+    # Calculate divergence and curl on CPU (gradient is not standard in cv2.cuda)
     if height < 2 or width < 2:  # Handle edge case for very small frames
         divergence = np.zeros_like(flow_x)
         curl = np.zeros_like(flow_y)
     else:
-        # Use central differences for gradient where possible, pad edges
-        # Using numpy.gradient is convenient but might be slow on large data
-        # For performance, consider optimizing gradient calculation or using GPU where available (less common for gradient)
+        # Using numpy.gradient
         dy_x, dx_x = np.gradient(flow_x)
         dy_y, dx_y = np.gradient(flow_y)
         divergence = dx_x + dy_y
-        curl = dx_y - dy_x  # Standard curl definition in 2D (scalar)
+        curl = dx_y - dy_x  # Standard Curl calculation
 
     magnitude = np.sqrt(flow_x**2 + flow_y**2)
 
@@ -273,7 +280,7 @@ def process_gpu(
     mask_critical = (mask_div | mask_crl) & mask_mag
     mask_critical_uint8 = mask_critical.astype(np.uint8) * 255
 
-    # Apply morphological operations to connect nearby dangerous pixels
+    # Apply morphological operations to connect nearby dangerous pixels on CPU
     mask_critical_morphed = cv2.morphologyEx(
         mask_critical_uint8, cv2.MORPH_OPEN, MORPH_STRUCT_ELEMENT
     )
@@ -281,7 +288,7 @@ def process_gpu(
         mask_critical_morphed, cv2.MORPH_CLOSE, MORPH_STRUCT_ELEMENT
     )
 
-    # Find contours on the morphed danger mask
+    # Find contours on the morphed danger mask on CPU
     contours, _ = cv2.findContours(
         mask_critical_morphed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
@@ -475,13 +482,19 @@ def process_gpu(
         and detection_results[0].boxes is not None
     ):
         # YOLO class ID for 'person' is typically 0
-        analysis_output["person_count"] = sum(
-            1
-            for det_cls in detection_results[0].boxes.cls.cpu().numpy()
-            if int(det_cls) == 0
-        )
+        # Ensure detection_results[0].boxes.cls is not None and is a numpy array
+        if (
+            hasattr(detection_results[0].boxes, "cls")
+            and detection_results[0].boxes.cls is not None
+        ):
+            analysis_output["person_count"] = sum(
+                1
+                for det_cls in detection_results[0].boxes.cls.cpu().numpy()
+                if int(det_cls) == 0
+            )
 
-    return annotated_frame, analysis_output, smoothed_flow_cpu
+    # Return the smoothed flow GpuMat for quiver plot generation
+    return annotated_frame, analysis_output, smoothed_flow_gpu
 
 
 def process_cpu(
@@ -494,7 +507,7 @@ def process_cpu(
     cell_width: int,
     cell_height: int,
     detection_results: Any,
-) -> tuple[np.ndarray, Dict[str, Any], np.ndarray]:
+) -> tuple[np.ndarray, Dict[str, Any], np.ndarray]:  # Return numpy array for flow
     height, width = proc_height, proc_width
 
     # Calculate dense optical flow
@@ -528,14 +541,7 @@ def process_cpu(
         dy_x, dx_x = np.gradient(flow_x)
         dy_y, dx_y = np.gradient(flow_y)
         divergence = dx_x + dy_y
-        curl = (
-            dx_y - dy_y
-        )  # This seems incorrect, should be dx_y - dy_x based on standard definition. Correcting.
-        # curl = dx_y - dy_x # Standard definition
-
-        # Double-checking the curl calculation in the second script: dv_dx - du_dy. Yes, this is dx_y - dy_x
-        # So, fixing the CPU curl calculation here to match the second script's logic and standard definition.
-        curl = dx_y - dy_x  # Corrected Curl calculation
+        curl = dx_y - dy_x  # Standard Curl calculation
 
     magnitude = np.sqrt(flow_x**2 + flow_y**2)
 
@@ -747,12 +753,18 @@ def process_cpu(
         and detection_results[0].boxes is not None
     ):
         # YOLO class ID for 'person' is typically 0
-        analysis_output["person_count"] = sum(
-            1
-            for det_cls in detection_results[0].boxes.cls.cpu().numpy()
-            if int(det_cls) == 0
-        )
+        # Ensure detection_results[0].boxes.cls is not None and is a numpy array
+        if (
+            hasattr(detection_results[0].boxes, "cls")
+            and detection_results[0].boxes.cls is not None
+        ):
+            analysis_output["person_count"] = sum(
+                1
+                for det_cls in detection_results[0].boxes.cls.cpu().numpy()
+                if int(det_cls) == 0
+            )
 
+    # Return the smoothed flow numpy array for quiver plot generation
     return annotated_frame, analysis_output, smoothed_flow
 
 
@@ -805,6 +817,11 @@ async def analyze_frame_endpoint(
     identifies danger/convergence zones, predicts movement, and returns
     an annotated frame and analysis data, including a quiver plot.
     """
+    # Initialize variables before the main try block
+    annotated_frame = None
+    analysis_output = {}
+    smoothed_flow_for_quiver = None  # Variable to hold flow data for quiver plot
+
     try:
         prev_content = await prev_frame.read()
         current_content = await current_frame.read()
@@ -851,6 +868,7 @@ async def analyze_frame_endpoint(
         if prev_img is None:
             # This case should ideally be caught by the initial None check, but good practice
             logging.error("Previous image is None before grayscale/resize.")
+            # Fallback gracefully or raise an error
             raise HTTPException(
                 status_code=500, detail="Internal error processing previous frame."
             )
@@ -877,17 +895,15 @@ async def analyze_frame_endpoint(
         grid_rows = max(1, est_rows)
         grid_cols = max(1, est_cols)
 
-        # Simple adjustment if cell count is significantly off (optional, depends on desired grid behavior)
-        # This part of the logic can be complex to optimize perfectly; the current approach is a heuristic.
-        # For simplicity, let's use the calculated grid_rows and grid_cols directly after ensuring minimums.
-
         # Recalculate cell dimensions based on the determined grid size
         cell_width = max(1, proc_width // grid_cols)
         cell_height = max(1, proc_height // grid_rows)
 
         # Perform analysis using GPU or CPU
-        smoothed_flow = None
-        if gpu_available:
+        # Use a local flag for this processing block in case the global gpu_available changes state
+        use_gpu_for_processing = gpu_available  # Start with the global state
+
+        if use_gpu_for_processing:
             try:
                 # Upload grayscale previous frame and color current frame to GPU
                 prev_gray_gpu = cv2.cuda_GpuMat()
@@ -897,25 +913,40 @@ async def analyze_frame_endpoint(
                 current_img_gpu.upload(current_img_resized)
 
                 # Process on GPU
-                annotated_frame, analysis_output, smoothed_flow = process_gpu(
-                    prev_gray_gpu,
-                    current_img_gpu,
-                    proc_width,
-                    proc_height,
-                    grid_rows,
-                    grid_cols,
-                    cell_width,
-                    cell_height,
-                    detection_results,
+                annotated_frame, analysis_output, smoothed_flow_gpu_result = (
+                    process_gpu(
+                        prev_gray_gpu,
+                        current_img_gpu,
+                        proc_width,
+                        proc_height,
+                        grid_rows,
+                        grid_cols,
+                        cell_width,
+                        cell_height,
+                        detection_results,
+                    )
                 )
+                # Download the smoothed flow from GPU to CPU for quiver plot generation
+                stream = cv2.cuda_Stream()  # Need a stream to download
+                smoothed_flow_for_quiver = smoothed_flow_gpu_result.download(
+                    stream=stream
+                )
+                stream.waitForCompletion()  # Wait for the download
                 logging.info("GPU analysis completed.")
-            except Exception as e:
-                logging.error(f"GPU analysis failed: {e}. Falling back to CPU.")
-                gpu_available = False  # Mark GPU as failed for this request/future requests if persistent
 
-        if not gpu_available:
+            except Exception as e:
+                logging.error(
+                    f"GPU analysis failed during processing: {e}. Falling back to CPU."
+                )
+                use_gpu_for_processing = (
+                    False  # Explicitly set local flag to False on failure
+                )
+                # If GPU processing failed, we need to run CPU processing to get results
+                # The code will now fall through to the CPU block below
+
+        if not use_gpu_for_processing:
             # Process on CPU
-            annotated_frame, analysis_output, smoothed_flow = process_cpu(
+            annotated_frame, analysis_output, smoothed_flow_for_quiver = process_cpu(
                 prev_gray_resized,
                 current_img_resized,
                 proc_width,
@@ -928,15 +959,18 @@ async def analyze_frame_endpoint(
             )
             logging.info("CPU analysis completed.")
 
-        # Generate Quiver Plot
-        quiver_base64 = generate_quiver_plot_base64(
-            smoothed_flow[..., 0],
-            smoothed_flow[..., 1],
-            proc_width,
-            proc_height,
-            QUIVER_STEP,
-            MAX_ARROW_DISPLAY_LENGTH,  # Pass max display length parameter
-        )
+        # Generate Quiver Plot if smoothed flow data is available
+        quiver_base64 = None  # Initialize to None
+        if smoothed_flow_for_quiver is not None:
+            quiver_base64 = generate_quiver_plot_base64(
+                smoothed_flow_for_quiver[..., 0],  # U component
+                smoothed_flow_for_quiver[..., 1],  # V component
+                proc_width,
+                proc_height,
+                QUIVER_STEP,
+                MAX_ARROW_DISPLAY_LENGTH,  # Pass max display length parameter
+            )
+
         if quiver_base64:
             analysis_output["quiver_plot_base64"] = quiver_base64
         else:
@@ -944,6 +978,14 @@ async def analyze_frame_endpoint(
             logging.warning("Failed to generate quiver plot.")
 
         # Encode annotated frame to base64
+        # Ensure annotated_frame is not None before encoding
+        if annotated_frame is None:
+            logging.error("Annotated frame is None after processing.")
+            raise HTTPException(
+                status_code=500,
+                detail="Internal error: Could not generate annotated frame.",
+            )
+
         is_success, buffer = cv2.imencode(".jpg", annotated_frame)
         if not is_success:
             raise HTTPException(
