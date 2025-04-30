@@ -49,7 +49,7 @@ export default function SignUpPage() {
 
       toast.success('Please check your email to verify your account.');
       reset();
-      router.push('/cameraList'); // ✅ Redirect
+      router.push('/app'); // ✅ Redirect
     } catch (error: any) {
       toast.error('Error: ' + error.message);
     } finally {

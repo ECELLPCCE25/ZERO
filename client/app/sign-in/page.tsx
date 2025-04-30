@@ -47,7 +47,7 @@ export default function SignInPage() {
 
       toast.success('You have successfully logged in.');
       reset();
-      router.push('/cameraList'); // ✅ correct redirect
+      router.push('/app'); // ✅ correct redirect
     } catch (error: any) {
       toast.error('Error: ' + error.message);
     } finally {
