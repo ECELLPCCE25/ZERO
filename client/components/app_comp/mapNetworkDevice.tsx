@@ -7,6 +7,7 @@ import { createSupabaseClient } from "@/lib/supabase";
 import { DotLottieReact } from "@lottiefiles/dotlottie-react";
 import clsx from "clsx";
 import { toast } from "sonner";
+
 const CameraList: React.FC = () => {
   const [ipCameras, setIpCameras] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -22,6 +23,8 @@ const CameraList: React.FC = () => {
   const [personCountHistory, setPersonCountHistory] = useState<{ [key: string]: { timestamp: string; count: number }[] }>({});
   const imgRefs = useRef<{ [key: string]: HTMLImageElement | null }>({});
 
+  const PERSON_COUNT_THRESHOLD = 4
+
   useEffect(() => {
     const supabase = createSupabaseClient();
     const fetchUser = async () => {
@@ -33,35 +36,58 @@ const CameraList: React.FC = () => {
 
   useEffect(() => {
     const supabase = createSupabaseClient();
-
     const channel = supabase.channel('camera_updates');
 
     channel.on(
-        'broadcast',
-        { event: 'UPDATE' },
-        (payload) => {
-            console.log('Broadcast message received:', payload);
-            // Ensure the user ID matches, and the broadcast contains the necessary information
-            if (payload.user_id === userId) {
-                const { stream_id, person_count, message } = payload;
-
-                // Handle the alert message and log it or show it as a toast
-                console.log(`Alert received: ${message} (Person count: ${person_count})`);
-                toast.success(`${message} (Person count: ${person_count})`);
-
-                // Optionally, you can refetch the camera list or update specific state variables
-                scanNetwork();
-            }
+      'broadcast',
+      { event: 'UPDATE' },
+      (payload) => {
+        console.log('Broadcast message received:', payload);
+        if (payload.user_id === userId && payload.person_count > PERSON_COUNT_THRESHOLD) {
+          const { stream_id, person_count, message } = payload;
+          console.log(`Alert received: ${message} (Person count: ${person_count})`);
+          toast.success(`${message} (Person count: ${person_count})`);
+          scanNetwork();
         }
+      }
     ).subscribe();
 
     return () => {
-        supabase.removeChannel(channel);
+      supabase.removeChannel(channel);
     };
-}, [userId]);
+  }, [userId]);
 
+  useEffect(() => {
+    let eventSource: EventSource | null = null;
 
+    const connectEventSource = () => {
+      eventSource = new EventSource(`${process.env.NEXT_PUBLIC_BACKEND_URL}/events`);
 
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        console.log('SSE message received:', data);
+        // Handle the SSE message as needed
+      };
+
+      eventSource.onerror = (err) => {
+        console.error('SSE error:', err);
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+        // Retry connecting after a delay
+        setTimeout(connectEventSource, 5000); // Retry after 5 seconds
+      };
+    };
+
+    connectEventSource();
+
+    return () => {
+      if (eventSource) {
+        eventSource.close();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const sockets: { [key: number]: WebSocket } = {};
@@ -128,6 +154,15 @@ const CameraList: React.FC = () => {
 
   const getGridColumns = () => "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3";
 
+  const getTotalPersonCount = () => {
+    return Object.values(currentPersonCount).reduce((acc, count) => acc + count, 0);
+  };
+
+  const getAveragePersonCount = () => {
+    const totalCount = getTotalPersonCount();
+    return connectedCameras.length > 0 ? (totalCount / connectedCameras.length).toFixed(1) : 0;
+  };
+
   return (
     <div className="relative p-6 min-h-screen bg-gray-100 text-gray-800">
       {loading && (
@@ -181,6 +216,24 @@ const CameraList: React.FC = () => {
         </Button>
       </div>
 
+      <Card className="mb-6 p-4 bg-white border border-gray-300 rounded-lg shadow-sm">
+        <h3 className="text-lg font-semibold mb-2">Statistics</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="text-center">
+            <p className="text-xs text-gray-500">Total Cameras</p>
+            <p className="font-semibold text-sm">{connectedCameras.length}</p>
+          </div>
+          <div className="text-center">
+            <p className="text-xs text-gray-500">Total Person Count</p>
+            <p className="font-semibold text-sm">{getTotalPersonCount()}</p>
+          </div>
+          <div className="text-center">
+            <p className="text-xs text-gray-500">Average Person Count</p>
+            <p className="font-semibold text-sm">{getAveragePersonCount()}</p>
+          </div>
+        </div>
+      </Card>
+
       <div className={`grid gap-6 ${getGridColumns()}`}>
         {connectedCameras.map(({ ip, id, visible, pinned, name }) => (
           <Card
@@ -227,9 +280,6 @@ const CameraList: React.FC = () => {
             </div>
 
             <div className="absolute top-2 right-2 flex gap-2">
-              {/* <Button size="sm" onClick={() => setFullScreenCameraId(id)} className="bg-gray-500 text-white">
-                📌 Pin
-              </Button> */}
               <Button size="sm" onClick={() => handleDiscardCamera(ip)} className="bg-red-500 text-white">
                 ❌ Discard
               </Button>
