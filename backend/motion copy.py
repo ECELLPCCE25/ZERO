@@ -15,7 +15,7 @@ QUIVER_STEP = 12  # Adjust this value to change the density of arrows
 QUIVER_SCALE = 10 * QUIVER_STEP  # Adjust this to control arrow length
 
 # Open the default camera (usually camera 0)
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture("dataset/4.mp4")
 
 # Check if the webcam opened successfully
 if not cap.isOpened():

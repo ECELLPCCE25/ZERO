@@ -87,7 +87,7 @@ MORPH_KERNEL = np.ones((5, 5), np.uint8)  # Example kernel size
 
 # Open the video source
 # cap = cv2.VideoCapture(0)  # Use camera
-cap = cv2.VideoCapture("dataset/5.mp4")  # Use video file
+cap = cv2.VideoCapture("dataset/1.mp4")  # Use video file
 
 # Check if the video source opened successfully
 if not cap.isOpened():
