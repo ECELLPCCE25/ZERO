@@ -128,13 +128,23 @@ def generate_quiver_plot_base64(
             step // 2 : height : step, step // 2 : width : step
         ]
 
-        # Ensure coordinates are within bounds
-        y_coords = np.clip(y_coords, 0, height - 1)
-        x_coords = np.clip(x_coords, 0, width - 1)
+        # Check if coordinate arrays are empty before indexing flow data
+        if y_coords.size == 0 or x_coords.size == 0:
+            logging.warning(
+                "No valid coordinates for quiver plot. Skipping plot generation."
+            )
+            return None  # Return None if no points to plot
 
         # Extract flow values at the selected coordinates
         u_values = flow_u[y_coords, x_coords]
         v_values = flow_v[y_coords, x_coords]
+
+        # Check if flow values are empty after indexing
+        if u_values.size == 0 or v_values.size == 0:
+            logging.warning(
+                "No flow values extracted for quiver plot. Skipping plot generation."
+            )
+            return None  # Return None if no flow values to plot
 
         # Calculate magnitudes for normalization and coloring
         magnitudes = np.sqrt(u_values**2 + v_values**2)
@@ -146,7 +156,6 @@ def generate_quiver_plot_base64(
 
         # Scale vectors for consistent arrow length display
         # We want the maximum arrow length in the plot to be proportional to the step size.
-        # A common approach is to make the longest arrow about 80% of the step.
         max_arrow_data_length = 0.8 * step
 
         if max_magnitude > 1e-6:  # Avoid division by zero or very small numbers
@@ -166,22 +175,39 @@ def generate_quiver_plot_base64(
             # Map angles to hue (0-360) using a circular colormap like 'hsv'
             norm = mcolors.Normalize(vmin=0, vmax=360)
             cmap = cm.hsv  # HSV colormap
-            colors = cmap(norm(angles_normalized))
+            colors = cmap(norm(angles_normalized))  # This returns an RGBA array (N, 4)
         else:
-            # If no significant flow, draw small blue arrows or dots
+            # If no significant flow, draw small blue arrows.
             u_display = np.zeros_like(u_values)
             v_display = np.zeros_like(v_values)
-            colors = "blue"  # Default color if no flow
+            # Create an array of blue RGBA colors with the same size as u_values
+            # This ensures the color array has the correct shape (N, 4)
+            colors = np.tile(mcolors.to_rgba("blue"), (u_values.size, 1))
 
         # Create the quiver plot
         # x_coords, y_coords are the starting points of the arrows
         # u_display, v_display are the components of the arrows
+        # Ensure x_coords, y_coords, u_display, v_display, and colors all have compatible sizes.
+        if not (x_coords.shape == y_coords.shape == u_display.shape == v_display.shape):
+            logging.error("Shape mismatch in quiver plot data.")
+            plt.close(fig)
+            return None
+
+        # If using an array of colors, its first dimension must match the number of arrows.
+        # This check is more robust now that we explicitly create an array in the else block.
+        if isinstance(colors, np.ndarray) and colors.shape[0] != u_values.size:
+            logging.error(
+                f"Color array size mismatch. Expected {u_values.size}, got {colors.shape[0]}."
+            )
+            plt.close(fig)
+            return None
+
         ax.quiver(
             x_coords,
             y_coords,
             u_display,
             v_display,
-            color=colors,
+            color=colors,  # Pass the color array
             angles="xy",  # Interpret U,V as x,y components
             scale_units="xy",  # Match scaling to x,y units
             scale=1,  # No additional scaling needed if vectors are already scaled
@@ -251,11 +277,7 @@ def process_gpu(
     stream.waitForCompletion()  # Wait for download to complete
 
     flow_x = smoothed_flow_cpu[..., 0]
-    flow_y = smoothed_flow_cpu[
-        ..., 0
-    ]  # This seems incorrect, should be smoothed_flow_cpu[..., 1]. Correcting.
-    # Corrected:
-    flow_y = smoothed_flow_cpu[..., 1]
+    flow_y = smoothed_flow_cpu[..., 1]  # Corrected index
 
     # Calculate divergence and curl on CPU (gradient is not standard in cv2.cuda)
     if height < 2 or width < 2:  # Handle edge case for very small frames
@@ -846,6 +868,12 @@ async def analyze_frame_endpoint(
             proc_width = current_width
             proc_height = current_height
 
+        # Ensure processing dimensions are positive
+        if proc_width <= 0 or proc_height <= 0:
+            raise HTTPException(
+                status_code=400, detail="Invalid image dimensions after resize."
+            )
+
         # Resize current frame for processing and display
         current_img_resized = cv2.resize(current_img, (proc_width, proc_height))
 
@@ -882,6 +910,7 @@ async def analyze_frame_endpoint(
         # --- Calculate Grid Dimensions ---
         # Ensure dimensions are positive before calculation
         if proc_width <= 0 or proc_height <= 0:
+            # This check is already done above, but keeping for robustness
             raise HTTPException(
                 status_code=400, detail="Invalid image dimensions after resize."
             )
@@ -961,7 +990,12 @@ async def analyze_frame_endpoint(
 
         # Generate Quiver Plot if smoothed flow data is available
         quiver_base64 = None  # Initialize to None
-        if smoothed_flow_for_quiver is not None:
+        # Ensure smoothed_flow_for_quiver is not None and has the expected shape before plotting
+        if (
+            smoothed_flow_for_quiver is not None
+            and smoothed_flow_for_quiver.ndim == 3
+            and smoothed_flow_for_quiver.shape[2] == 2
+        ):
             quiver_base64 = generate_quiver_plot_base64(
                 smoothed_flow_for_quiver[..., 0],  # U component
                 smoothed_flow_for_quiver[..., 1],  # V component
@@ -970,12 +1004,16 @@ async def analyze_frame_endpoint(
                 QUIVER_STEP,
                 MAX_ARROW_DISPLAY_LENGTH,  # Pass max display length parameter
             )
+        else:
+            logging.warning(
+                "Smoothed flow data not in expected format for quiver plot. Skipping plot generation."
+            )
 
         if quiver_base64:
             analysis_output["quiver_plot_base64"] = quiver_base64
         else:
             analysis_output["quiver_plot_base64"] = None
-            logging.warning("Failed to generate quiver plot.")
+            # Warning already logged in generate_quiver_plot_base64 or above
 
         # Encode annotated frame to base64
         # Ensure annotated_frame is not None before encoding
