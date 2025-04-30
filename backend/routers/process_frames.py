@@ -180,9 +180,12 @@ def generate_quiver_plot_base64(
             angles_normalized = (angles_deg + 360) % 360
 
             # Map angles to hue (0-360) using a circular colormap like 'hsv'
-            norm = mcolors.Normalize(vmin=0, vmax=360)
-            cmap = cm.hsv  # HSV colormap
-            colors = cmap(norm(angles_normalized))  # This returns an RGBA array (N, 4)
+            colors = cm.hsv(
+                mcolors.Normalize(vmin=0, vmax=360)(angles_normalized)
+            )  # This returns an RGBA array (H, W, 4)
+            # Reshape the colors array to (N, 4) where N is the number of arrows
+            colors = colors.reshape(-1, 4)  # Reshape to (number of elements, 4)
+
         else:
             # If no significant flow, draw small blue arrows.
             u_display = np.zeros_like(u_values)
@@ -197,15 +200,25 @@ def generate_quiver_plot_base64(
         # x_coords, y_coords are the starting points of the arrows
         # u_display, v_display are the components of the arrows
         # Ensure x_coords, y_coords, u_display, v_display, and colors all have compatible sizes.
-        if not (x_coords.shape == y_coords.shape == u_display.shape == v_display.shape):
+        # Reshape x_coords and y_coords to 1D arrays to match the reshaped colors, u_display, v_display
+        x_coords_flat = x_coords.flatten()
+        y_coords_flat = y_coords.flatten()
+        u_display_flat = u_display.flatten()
+        v_display_flat = v_display.flatten()
+
+        if not (
+            x_coords_flat.shape
+            == y_coords_flat.shape
+            == u_display_flat.shape
+            == v_display_flat.shape
+        ):
             logging.error(
-                f"Shape mismatch in quiver plot data: x_coords={x_coords.shape}, y_coords={y_coords.shape}, u_display={u_display.shape}, v_display={v_display.shape}"
+                f"Flattened shape mismatch in quiver plot data: x_coords={x_coords_flat.shape}, y_coords={y_coords_flat.shape}, u_display={u_display_flat.shape}, v_display={v_display_flat.shape}"
             )
             plt.close(fig)
             return None
 
         # If using an array of colors, its first dimension must match the number of arrows.
-        # This check is more robust now that we explicitly create an array in the else block.
         if isinstance(colors, np.ndarray) and colors.shape[0] != u_values.size:
             logging.error(
                 f"Color array size mismatch. Expected {u_values.size}, got {colors.shape[0]}."
@@ -214,11 +227,11 @@ def generate_quiver_plot_base64(
             return None
 
         ax.quiver(
-            x_coords,
-            y_coords,
-            u_display,
-            v_display,
-            color=colors,  # Pass the color array
+            x_coords_flat,  # Use flattened coordinates
+            y_coords_flat,  # Use flattened coordinates
+            u_display_flat,  # Use flattened flow components
+            v_display_flat,  # Use flattened flow components
+            color=colors,  # Pass the color array (now correctly shaped)
             angles="xy",  # Interpret U,V as x,y components
             scale_units="xy",  # Match scaling to x,y units
             scale=1,  # No additional scaling needed if vectors are already scaled
