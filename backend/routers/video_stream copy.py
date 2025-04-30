@@ -29,6 +29,7 @@ person_count_data = {}
 # Threshold for triggering an alert
 PERSON_COUNT_THRESHOLD = 5
 
+
 @router.websocket("/ws/{stream_id}")
 async def websocket_endpoint(websocket: WebSocket, stream_id: str):
     await websocket.accept()
@@ -36,9 +37,11 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
         while True:
             # Send person count data every second
             response_data = {
-                "person_count_data": get_last_15_seconds_data(person_count_data.get(stream_id, [])),
+                "person_count_data": get_last_15_seconds_data(
+                    person_count_data.get(stream_id, [])
+                ),
                 "current_person_count": get_current_person_count(stream_id),
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
             }
             await websocket.send_json(response_data)
 
@@ -68,7 +71,9 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
 
             await asyncio.sleep(1)  # Send data every second
     except Exception as e:
-        logging.error(f"WebSocket connection closed for stream ID: {stream_id} with error: {e}")
+        logging.error(
+            f"WebSocket connection closed for stream ID: {stream_id} with error: {e}"
+        )
         # Optionally store data here if WebSocket is the only connection
         # store_person_count_data(stream_id)
     finally:
@@ -76,8 +81,14 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
         # store_person_count_data(stream_id)
         pass
 
+
 @router.get("/ipcam")
-async def ipcam_endpoint(device: str = Query(...), id: str = Query(...), user_id: str = Query(...), name: str = Query(...)):
+async def ipcam_endpoint(
+    device: str = Query(...),
+    id: str = Query(...),
+    user_id: str = Query(...),
+    name: str = Query(...),
+):
     async def generate():
         video_url = f"http://{device}:4747/video"
         cap = cv2.VideoCapture(video_url)
@@ -94,10 +105,12 @@ async def ipcam_endpoint(device: str = Query(...), id: str = Query(...), user_id
                 results = model(frame)
                 person_count = sum(1 for r in results[0].boxes.cls if int(r) == 0)
                 annotated_frame = draw_boxes(frame, results)
-                _, buffer = cv2.imencode('.jpg', annotated_frame)
+                _, buffer = cv2.imencode(".jpg", annotated_frame)
                 frame_bytes = buffer.tobytes()
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
+                )
                 await asyncio.sleep(0.03)
 
                 # Track person count data
@@ -118,7 +131,10 @@ async def ipcam_endpoint(device: str = Query(...), id: str = Query(...), user_id
             if id in person_count_data:
                 del person_count_data[id]
 
-    return StreamingResponse(generate(), media_type="multipart/x-mixed-replace;boundary=frame")
+    return StreamingResponse(
+        generate(), media_type="multipart/x-mixed-replace;boundary=frame"
+    )
+
 
 @router.post("/stop_stream")
 async def stop_stream(data: Dict[str, str]):
@@ -134,7 +150,9 @@ async def stop_stream(data: Dict[str, str]):
             del person_count_data[ip]
         return {"message": f"Stream for IP {ip} stopped successfully"}
     else:
-        raise HTTPException(status_code=404, detail="No active stream found for the specified IP")
+        raise HTTPException(
+            status_code=404, detail="No active stream found for the specified IP"
+        )
 
 
 def decode_frame(data):
@@ -143,6 +161,7 @@ def decode_frame(data):
     frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
     return frame
 
+
 def draw_boxes(frame, results):
     annotated_frame = frame.copy()
     for box in results[0].boxes.xyxy.cpu().numpy():
@@ -150,29 +169,54 @@ def draw_boxes(frame, results):
         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
     return annotated_frame
 
+
 def trigger_alert(stream_id, person_count):
-    logging.warning(f"Alert! Person count ({person_count}) exceeds the threshold for stream ID: {stream_id}")
+    logging.warning(
+        f"Alert! Person count ({person_count}) exceeds the threshold for stream ID: {stream_id}"
+    )
+
 
 def store_person_count_data(stream_id: str, user_id: str = None, name: str = None):
     if stream_id in person_count_data and person_count_data[stream_id]:
-        data_to_store = [{"timestamp": ts.isoformat(), "count": cnt} for ts, cnt in person_count_data[stream_id]]
+        data_to_store = [
+            {"timestamp": ts.isoformat(), "count": cnt}
+            for ts, cnt in person_count_data[stream_id]
+        ]
         try:
-            response = supabase.table('cam_data').insert([{
-                'user_id': user_id,
-                'stream_id': stream_id,
-                'person_count_data': data_to_store,
-                'cam_name': name
-            }]).execute()
-            logging.info(f"Data successfully stored in Supabase for stream ID: {stream_id}")
+            response = (
+                supabase.table("cam_data")
+                .insert(
+                    [
+                        {
+                            "user_id": user_id,
+                            "stream_id": stream_id,
+                            "person_count_data": data_to_store,
+                            "cam_name": name,
+                        }
+                    ]
+                )
+                .execute()
+            )
+            logging.info(
+                f"Data successfully stored in Supabase for stream ID: {stream_id}"
+            )
         except Exception as e:
-            logging.error(f"Failed to store data in Supabase for stream ID: {stream_id}: {e}")
+            logging.error(
+                f"Failed to store data in Supabase for stream ID: {stream_id}: {e}"
+            )
     else:
         logging.warning(f"No person count data found for stream ID: {stream_id}")
+
 
 def get_last_15_seconds_data(data):
     now = datetime.now()
     fifteen_seconds_ago = now - timedelta(seconds=15)
-    return [{"timestamp": ts.isoformat(), "count": cnt} for ts, cnt in data if ts > fifteen_seconds_ago]
+    return [
+        {"timestamp": ts.isoformat(), "count": cnt}
+        for ts, cnt in data
+        if ts > fifteen_seconds_ago
+    ]
+
 
 def get_current_person_count(stream_id: str) -> int:
     if stream_id in person_count_data and person_count_data[stream_id]:
